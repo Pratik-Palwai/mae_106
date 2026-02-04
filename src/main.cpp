@@ -1,16 +1,23 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_Sensor.h>
+#include <EEPROM.h>
 #include <LSM6.h>
-#include <Adafruit_LIS3MDL.h>
+#include <LIS3MDL.h>
 #include <Servo.h>
 #include <PID_v1.h>
 
 LSM6 lsm6;
 const float GYRO_CALIBRATION_SAMPLES = 500;
 const float LSM6_GYRO_NORMALIZATION = 0.00875;
+const float LIS3_MAG_NORMALIZATION = RAD_TO_DEG;
 
-Adafruit_LIS3MDL lis3;
+LIS3MDL lis3;
+#define EEPROM_X_OFFSET 0
+#define EEPROM_Y_OFFSET 4
+
+float mag_x_offset = 0;
+float mag_y_offset = 0;
+int calibration_start_time = 0;
 
 QueueHandle_t imu_queue;
 QueueHandle_t ahrs_queue;
@@ -49,6 +56,8 @@ struct ahrsPacket
     long timestamp = 0;
     float angles[3] = {0.0, 0.0, 0.0};
     float rates[3] = {0.0, 0.0, 0.0};
+    float mag_heading = 0.0;
+    float fused_heading = 0.0;
 };
 
 void IRAM_ATTR limitSwitchISR() { trigger = true; }
@@ -66,9 +75,35 @@ void initializeLSM6(void)
     lsm6.enableDefault();
 }
 
+void calibrateMagnetometer() {
+    Serial.println("Calibrating... rotate sensor slowly in all directions for 10 sec");
+
+    float x_min = 32767, x_max = -32768;
+    float y_min = 32767, y_max = -32768;
+
+    unsigned long t0 = millis();
+    while (millis() - t0 < 10000) 
+    {
+        lis3.read();
+
+        if (lis3.m.x < x_min) x_min = lis3.m.x;
+        if (lis3.m.x > x_max) x_max = lis3.m.x;
+        if (lis3.m.y < y_min) y_min = lis3.m.y;
+        if (lis3.m.y > y_max) y_max = lis3.m.y;
+
+        delay(10);
+    }
+
+    mag_x_offset = (x_max + x_min) / 2.0;
+    mag_x_offset = (y_max + y_min) / 2.0;
+
+    EEPROM.put(EEPROM_X_OFFSET, mag_x_offset);
+    EEPROM.put(EEPROM_Y_OFFSET, mag_y_offset);
+}
+
 void initalizeLIS3(void)
 {
-    if (!lis3.begin_I2C(0x1E))
+    if (!lis3.init())
     {
         Serial.println("Failed to detect/initialize LIS3");
         while(1);
@@ -76,12 +111,62 @@ void initalizeLIS3(void)
 
     else
     {
-        lis3.setOperationMode(LIS3MDL_CONTINUOUSMODE);
-        lis3.setRange(LIS3MDL_RANGE_8_GAUSS);
-        lis3.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
-        lis3.setDataRate(LIS3MDL_DATARATE_1000_HZ);
-
         Serial.println("Successfully initialized LIS3");
+    }
+
+    Serial.println("Press 'R' within 5 seconds to recalibrate.");
+    unsigned long t0 = millis();
+    bool recalibrate = false;
+
+    while (millis() - t0 < 5000)
+    {
+        if (Serial.available())
+        {
+            char c = Serial.read();
+            if (c == 'R' || c == 'r') { recalibrate = true; break; }
+        }
+    }
+
+    if (recalibrate)
+    {
+        calibrateMagnetometer();
+        Serial.println("Calibration complete and saved to EEPROM.");
+    }
+
+    else
+    {
+        EEPROM.get(EEPROM_X_OFFSET, mag_x_offset);
+        EEPROM.get(EEPROM_Y_OFFSET, mag_y_offset);
+        Serial.println("Loaded calibration from EEPROM.");
+    }
+
+    Serial.println("X,Y,Z,Heading(deg)");
+
+    calibration_start_time = millis();
+
+    while(1)
+    {
+        unsigned long elapsed = millis() - calibration_start_time;
+        if (elapsed >= 10000)
+        {
+            Serial.println("Measurement complete.");
+            break;
+        }
+
+        lis3.read();
+
+        float x_corr = lis3.m.x - mag_x_offset;
+        float y_corr = lis3.m.y - mag_y_offset;
+
+        float heading = atan2(y_corr, x_corr) * 180.0;
+        if (heading < 0) heading += 360.0;
+
+        Serial.print(lis3.m.x); Serial.print(" ");
+        Serial.print(lis3.m.y); Serial.print(" ");
+        Serial.print(lis3.m.z); Serial.print(" ");
+        Serial.println(heading, 2);
+
+        delay(10);
     }
 }
 
@@ -125,9 +210,9 @@ void readSensors(void *param)
 
         lis3.read();
 
-        sensor_packet.lis3_mag[0] = lis3.x;
-        sensor_packet.lis3_mag[1] = lis3.y;
-        sensor_packet.lis3_mag[2] = lis3.z;
+        sensor_packet.lis3_mag[0] = lis3.m.x * LIS3_MAG_NORMALIZATION;
+        sensor_packet.lis3_mag[1] = lis3.m.y * LIS3_MAG_NORMALIZATION;
+        sensor_packet.lis3_mag[2] = lis3.m.z * LIS3_MAG_NORMALIZATION;
 
         xQueueOverwrite(imu_queue, &sensor_packet);
         xTaskDelayUntil(&last_wake, period);
@@ -152,7 +237,7 @@ void updateAHRS(void *param)
             for (int i = 0; i < 3; i++)
             {
                 ahrs_packet.rates[i] = sensor_packet.lsm6_gyro[i];
-                ahrs_packet.angles[i] += ahrs_packet.rates[i] * dt;
+                ahrs_packet.angles[i] = sensor_packet.lis3_mag[i] * dt;
             }
 
             orientation_z = ahrs_packet.angles[2];

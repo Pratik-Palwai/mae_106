@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <Wire.h>
 #include <LIS3MDL.h>
 #include <EEPROM.h>
