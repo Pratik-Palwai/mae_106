@@ -1,0 +1,105 @@
+#include <Wire.h>
+#include <LIS3MDL.h>
+#include <EEPROM.h>
+#include <math.h>
+
+LIS3MDL mag;
+
+// EEPROM addresses for stored calibration
+#define EEPROM_X_OFFSET 0
+#define EEPROM_Y_OFFSET 4
+
+float x_offset = 0;
+float y_offset = 0;
+
+unsigned long startTime;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  if (!mag.init()) {
+    Serial.println("Failed to detect magnetometer!");
+    while (1);
+  }
+  mag.enableDefault();
+
+  // Check if user wants to recalibrate
+  Serial.println("Press 'R' within 5 seconds to recalibrate.");
+  unsigned long t0 = millis();
+  bool recalibrate = false;
+  while (millis() - t0 < 5000) {
+    if (Serial.available()) {
+      char c = Serial.read();
+      if (c == 'R' || c == 'r') {
+        recalibrate = true;
+        break;
+      }
+    }
+  }
+
+  if (recalibrate) {
+    calibrateSensor();
+    Serial.println("Calibration complete and saved to EEPROM.");
+  } else {
+    // Load offsets from EEPROM
+    EEPROM.get(EEPROM_X_OFFSET, x_offset);
+    EEPROM.get(EEPROM_Y_OFFSET, y_offset);
+    Serial.println("Loaded calibration from EEPROM.");
+  }
+
+  // CSV header
+  Serial.println("X,Y,Z,Heading(deg)");
+
+  startTime = millis();
+}
+
+void loop() {
+  unsigned long elapsed = millis() - startTime;
+  if (elapsed >= 10000) { // Stop after 10 seconds
+    Serial.println("Measurement complete.");
+    while (1);
+  }
+
+  mag.read();
+
+  float x_corr = mag.m.x - x_offset;
+  float y_corr = mag.m.y - y_offset;
+
+  float heading = atan2(y_corr, x_corr) * 180.0 / PI;
+  if (heading < 0) heading += 360.0;
+
+  Serial.print(mag.m.x); Serial.print(" ");
+  Serial.print(mag.m.y); Serial.print(" ");
+  Serial.print(mag.m.z); Serial.print(" ");
+  Serial.println(heading, 2);
+
+  delay(10); // 100 Hz
+}
+
+// Simple hard-iron calibration: rotate the sensor slowly in all directions
+void calibrateSensor() {
+  Serial.println("Calibrating... rotate sensor slowly in all directions for 10 sec");
+
+  float x_min = 32767, x_max = -32768;
+  float y_min = 32767, y_max = -32768;
+
+  unsigned long t0 = millis();
+  while (millis() - t0 < 10000) { // 10 seconds calibration
+    mag.read();
+
+    if (mag.m.x < x_min) x_min = mag.m.x;
+    if (mag.m.x > x_max) x_max = mag.m.x;
+    if (mag.m.y < y_min) y_min = mag.m.y;
+    if (mag.m.y > y_max) y_max = mag.m.y;
+
+    delay(10);
+  }
+
+  x_offset = (x_max + x_min) / 2.0;
+  y_offset = (y_max + y_min) / 2.0;
+
+  // Save to EEPROM
+  EEPROM.put(EEPROM_X_OFFSET, x_offset);
+  EEPROM.put(EEPROM_Y_OFFSET, y_offset);
+}
