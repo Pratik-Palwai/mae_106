@@ -46,7 +46,6 @@ const int SOLENOID_PIN = D7;
 struct sensorPacket
 {
     long timestamp = 0;
-    float lsm6_imu[3] = {0.0, 0.0, 0.0};
     float lsm6_gyro[3] = {0.0, 0.0, 0.0};
     float lis3_mag[3] = {0.0, 0.0, 0.0};
 };
@@ -54,8 +53,9 @@ struct sensorPacket
 struct ahrsPacket
 {
     long timestamp = 0;
-    float angles[3] = {0.0, 0.0, 0.0};
-    float rates[3] = {0.0, 0.0, 0.0};
+    float gyro_angle = 0.0;;
+    float gyro_rate = 0.0;
+    float mag_fields[3] = {0.0, 0.0, 0.0};
     float mag_heading = 0.0;
     float fused_heading = 0.0;
 };
@@ -95,7 +95,7 @@ void calibrateMagnetometer() {
     }
 
     mag_x_offset = (x_max + x_min) / 2.0;
-    mag_x_offset = (y_max + y_min) / 2.0;
+    mag_y_offset = (y_max + y_min) / 2.0;
 
     EEPROM.put(EEPROM_X_OFFSET, mag_x_offset);
     EEPROM.put(EEPROM_Y_OFFSET, mag_y_offset);
@@ -174,7 +174,7 @@ void readSensors(void *param)
 {
     sensorPacket sensor_packet;
 
-    float gyro_bias[3] = {0.0, 0.0, 0.0};
+    float gyro_bias = 0.0;
 
     Serial.println("Calibrating gyro");
 
@@ -182,16 +182,12 @@ void readSensors(void *param)
     {
         lsm6.read();
 
-        gyro_bias[0] += lsm6.g.x;
-        gyro_bias[1] += lsm6.g.y;
-        gyro_bias[2] += lsm6.g.z;
+        gyro_bias += lsm6.g.z;
 
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 
-    gyro_bias[0] /= GYRO_CALIBRATION_SAMPLES;
-    gyro_bias[1] /= GYRO_CALIBRATION_SAMPLES;
-    gyro_bias[2] /= GYRO_CALIBRATION_SAMPLES;
+    gyro_bias /= GYRO_CALIBRATION_SAMPLES;
 
     Serial.println("Gyro calibration complete");
 
@@ -204,15 +200,19 @@ void readSensors(void *param)
 
         sensor_packet.timestamp = xTaskGetTickCount();
 
-        sensor_packet.lsm6_gyro[0] = (lsm6.g.x - gyro_bias[0]) * LSM6_GYRO_NORMALIZATION;
-        sensor_packet.lsm6_gyro[1] = (lsm6.g.y - gyro_bias[1]) * LSM6_GYRO_NORMALIZATION;
-        sensor_packet.lsm6_gyro[2] = (lsm6.g.z - gyro_bias[2]) * LSM6_GYRO_NORMALIZATION;
+        sensor_packet.lsm6_gyro[2] = (lsm6.g.z - gyro_bias) * LSM6_GYRO_NORMALIZATION;
 
         lis3.read();
 
-        sensor_packet.lis3_mag[0] = lis3.m.x * LIS3_MAG_NORMALIZATION;
-        sensor_packet.lis3_mag[1] = lis3.m.y * LIS3_MAG_NORMALIZATION;
-        sensor_packet.lis3_mag[2] = lis3.m.z * LIS3_MAG_NORMALIZATION;
+        sensor_packet.lis3_mag[0] = (lis3.m.x - mag_x_offset);
+        sensor_packet.lis3_mag[1] = (lis3.m.y - mag_y_offset);
+        sensor_packet.lis3_mag[2] = lis3.m.z;
+
+        for (int i = 0; i < 3; i++)
+        {
+            sensor_packet.lsm6_gyro[i] = fmod(sensor_packet.lsm6_gyro[i], 360.0);
+            sensor_packet.lis3_mag[i] = fmod(sensor_packet.lis3_mag[i], 360.0);
+        }
 
         xQueueOverwrite(imu_queue, &sensor_packet);
         xTaskDelayUntil(&last_wake, period);
@@ -222,7 +222,8 @@ void readSensors(void *param)
 void updateAHRS(void *param)
 {
     sensorPacket sensor_packet;
-    ahrsPacket ahrs_packet = {};
+    ahrsPacket ahrs_packet;
+    ahrsPacket ahrs_packet_new = {};
 
     const TickType_t period = pdMS_TO_TICKS(1);
     TickType_t last_wake = xTaskGetTickCount();
@@ -232,19 +233,18 @@ void updateAHRS(void *param)
     {
         vTaskDelayUntil(&last_wake, period);
 
-        if (xQueuePeek(imu_queue, &sensor_packet, 0) == pdTRUE)
-        {
-            for (int i = 0; i < 3; i++)
-            {
-                ahrs_packet.rates[i] = sensor_packet.lsm6_gyro[i];
-                ahrs_packet.angles[i] = sensor_packet.lis3_mag[i] * dt;
-            }
+        xQueuePeek(imu_queue, &sensor_packet, 0);
+        xQueuePeek(ahrs_queue, &ahrs_packet, 0);
+    
+        ahrs_packet_new.gyro_rate = sensor_packet.lsm6_gyro[2];
+        ahrs_packet_new.gyro_angle += ahrs_packet.gyro_rate * ahrs_dt;
 
-            orientation_z = ahrs_packet.angles[2];
-            ahrs_packet.timestamp = xTaskGetTickCount();
+        ahrs_packet.mag_heading = atan2f(sensor_packet.lis3_mag[1], sensor_packet.lis3_mag[0]);
 
-            xQueueOverwrite(ahrs_queue, &ahrs_packet);
-        }
+        orientation_z = ahrs_packet.mag_heading;
+        ahrs_packet.timestamp = xTaskGetTickCount();
+
+        xQueueOverwrite(ahrs_queue, &ahrs_packet_new);
     }
 }
 
@@ -261,6 +261,7 @@ void moveServo(void *param)
             case TURNING:
                 setpoint = 90.0;
                 if (fabs(orientation_z - setpoint) < 2.0) { state = STRAIGHT_2; }
+                break;
             case STRAIGHT_2:
                 setpoint = 90.0;
                 break;
@@ -326,12 +327,8 @@ void updateSerial(void *param)
         xQueueReceive(ahrs_queue, &ahrs_packet, portMAX_DELAY);
 
         Serial.print(">ahrs_t:" + String(ahrs_packet.timestamp));
-        Serial.print(",rate_x:" + String(ahrs_packet.rates[0]));
-        Serial.print(",rate_y:" + String(ahrs_packet.rates[1]));
-        Serial.print(",rate_z:" + String(ahrs_packet.rates[2]));
-        Serial.print(",angle_x:" + String(ahrs_packet.angles[0]));
-        Serial.print(",angle_y:" + String(ahrs_packet.angles[1]));
-        Serial.print(",angle_z:" + String(ahrs_packet.angles[2]));
+        Serial.print(",gyro_rate:" + String(ahrs_packet.gyro_rate));
+        Serial.print(",gyro_angle:" + String(ahrs_packet.gyro_angle));
         Serial.print(",clicks:" + String(clicks));
         Serial.print(",steering_angle_delta:" + String(steering_angle_delta));
         Serial.println();
