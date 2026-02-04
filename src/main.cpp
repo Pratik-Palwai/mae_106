@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <numeric>
 #include <Wire.h>
 #include <EEPROM.h>
 #include <LSM6.h>
@@ -7,13 +8,14 @@
 #include <PID_v1.h>
 
 LSM6 gyroscope;
-const float GYRO_NORMALIZATION = 0.0875;
+const float GYRO_NORMALIZATION = 0.0875  * 70.0 / 1000.0;
+float gyro_rate_bias = 0.0;
+#define EEPROM_GYRO_RATE_BIAS 0
 
 LIS3MDL magnetometer;
-LIS3MDL::vector<int16_t> running_min = {32767, 32767, 32767}, running_max = {-32768, -32768, -32768};
-
-#define EEPROM_MAG_X_OFFSET 0
-#define EEPROM_MAG_Y_OFFSET 4
+float mag_field_base[3] = {0.0, 0.0, 0.0};
+#define EEPROM_MAG_X_OFFSET 4
+#define EEPROM_MAG_Y_OFFSET 8
 
 QueueHandle_t sensor_queue;
 QueueHandle_t ahrs_queue;
@@ -59,9 +61,50 @@ void initalizeLIS3MDL(void)
     else { Serial.println("Successfully initialized LIS3MDL"); }
 
     magnetometer.enableDefault();
+
+    const int MAG_CALIBRATION_SAMPLES = 1000;
+    double mag_fields_sum[3] = {0.0, 0.0, 0.0};
+
+    Serial.println("Starting mag calibration loop . . . ");
+    
+    for (int i = 0; i < MAG_CALIBRATION_SAMPLES; i++)
+    {
+        magnetometer.read();
+
+        mag_fields_sum[0] += magnetometer.m.x;
+        mag_fields_sum[1] += magnetometer.m.y;
+        mag_fields_sum[2] += magnetometer.m.z;
+    }
+
+    Serial.println("Finished mag calibration loop");
+
+    mag_field_base[0] = mag_fields_sum[0] / MAG_CALIBRATION_SAMPLES;
+    mag_field_base[1] = mag_fields_sum[1] / MAG_CALIBRATION_SAMPLES;
+    mag_field_base[2] = mag_fields_sum[2] / MAG_CALIBRATION_SAMPLES;
+    
+    Serial.println("Mag fields base | x:" + String(mag_field_base[0]) + " y:" + String(mag_field_base[1]) + " z:" + String(mag_field_base[0]));
 }
 
-void calibrateLSM6(void) { }
+void calibrateLSM6(void)
+{
+    const int GYRO_CALIBRATION_SAMPLES = 1000;
+    double rates_sum = 0.0;
+
+    Serial.println("Starting gyro calibration loop . . . ");
+
+    for (int i = 0; i < GYRO_CALIBRATION_SAMPLES; i++)
+    {
+        gyroscope.read();
+        rates_sum += gyroscope.g.z * GYRO_NORMALIZATION;
+    }
+
+    Serial.println("Finished gyro calibration loop . . . ");
+
+    gyro_rate_bias = rates_sum / GYRO_CALIBRATION_SAMPLES;
+    Serial.println("gyro_rate_bias:" + String(gyro_rate_bias));
+
+    EEPROM.put(EEPROM_GYRO_RATE_BIAS, gyro_rate_bias);
+}
 
 void calibrateLIS3MDL(void) { }
 
@@ -77,21 +120,13 @@ void readSensors(void *param)
         gyroscope.read();
         magnetometer.read();
         
-        sensor_packet.gyro_data[0] = gyroscope.g.x * GYRO_NORMALIZATION;
-        sensor_packet.gyro_data[1] = gyroscope.g.y * GYRO_NORMALIZATION;
-        sensor_packet.gyro_data[2] = gyroscope.g.z * GYRO_NORMALIZATION;
-
-        running_min.x = min(running_min.x, magnetometer.m.x);
-        running_min.y = min(running_min.y, magnetometer.m.y);
-        running_min.z = min(running_min.z, magnetometer.m.z);
-
-        running_max.x = max(running_max.x, magnetometer.m.x);
-        running_max.y = max(running_max.y, magnetometer.m.y);
-        running_max.z = max(running_max.z, magnetometer.m.z);
+        sensor_packet.gyro_data[0] = (gyroscope.g.x * GYRO_NORMALIZATION) - gyro_rate_bias;
+        sensor_packet.gyro_data[1] = (gyroscope.g.y * GYRO_NORMALIZATION) - gyro_rate_bias;
+        sensor_packet.gyro_data[2] = (gyroscope.g.z * GYRO_NORMALIZATION) - gyro_rate_bias;
         
-        sensor_packet.mag_data[0] = magnetometer.m.x;
-        sensor_packet.mag_data[1] = magnetometer.m.y;
-        sensor_packet.mag_data[2] = magnetometer.m.z;
+        sensor_packet.mag_data[0] = magnetometer.m.x - mag_field_base[0];
+        sensor_packet.mag_data[1] = magnetometer.m.y - mag_field_base[1];
+        sensor_packet.mag_data[2] = magnetometer.m.z - mag_field_base[2];
 
         sensor_packet.timestamp = xTaskGetTickCount();
 
@@ -117,7 +152,6 @@ void updateAHRS(void *param)
         ahrs_packet_new.gyro_heading += ahrs_packet.gyro_rate * ahrs_dt;
 
         ahrs_packet_new.mag_heading = atan2f(sensor_packet.mag_data[1], sensor_packet.mag_data[0]);
-        ahrs_packet_new.mag_heading *= RAD_TO_DEG;
 
         ahrs_packet_new.timestamp = xTaskGetTickCount();
 
@@ -158,6 +192,9 @@ void setup()
 
     initializeLSM6();
     initalizeLIS3MDL();
+
+    calibrateLSM6();
+    calibrateLIS3MDL();
 
     sensor_queue = xQueueCreate(1, sizeof(sensorPacket));
     ahrs_queue = xQueueCreate(1, sizeof(ahrsPacket));
