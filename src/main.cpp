@@ -13,7 +13,7 @@ float gyro_rate_bias = 0.0;
 #define EEPROM_GYRO_RATE_BIAS 0
 
 LIS3MDL magnetometer;
-float mag_field_base[3] = {0.0, 0.0, 0.0};
+int16_t running_min[3] = {32767, 32767, 32767}, running_max[3] = {0, 0, 0};
 #define EEPROM_MAG_X_OFFSET 4
 #define EEPROM_MAG_Y_OFFSET 8
 
@@ -61,28 +61,6 @@ void initalizeLIS3MDL(void)
     else { Serial.println("Successfully initialized LIS3MDL"); }
 
     magnetometer.enableDefault();
-
-    const int MAG_CALIBRATION_SAMPLES = 1000;
-    double mag_fields_sum[3] = {0.0, 0.0, 0.0};
-
-    Serial.println("Starting mag calibration loop . . . ");
-    
-    for (int i = 0; i < MAG_CALIBRATION_SAMPLES; i++)
-    {
-        magnetometer.read();
-
-        mag_fields_sum[0] += magnetometer.m.x;
-        mag_fields_sum[1] += magnetometer.m.y;
-        mag_fields_sum[2] += magnetometer.m.z;
-    }
-
-    Serial.println("Finished mag calibration loop");
-
-    mag_field_base[0] = mag_fields_sum[0] / MAG_CALIBRATION_SAMPLES;
-    mag_field_base[1] = mag_fields_sum[1] / MAG_CALIBRATION_SAMPLES;
-    mag_field_base[2] = mag_fields_sum[2] / MAG_CALIBRATION_SAMPLES;
-    
-    Serial.println("Mag fields base | x:" + String(mag_field_base[0]) + " y:" + String(mag_field_base[1]) + " z:" + String(mag_field_base[0]));
 }
 
 void calibrateLSM6(void)
@@ -106,7 +84,20 @@ void calibrateLSM6(void)
     EEPROM.put(EEPROM_GYRO_RATE_BIAS, gyro_rate_bias);
 }
 
-void calibrateLIS3MDL(void) { }
+void calibrateLIS3MDL(void)
+{
+    magnetometer.read();
+
+    running_min[0] = min(running_min[0], magnetometer.m.x);
+    running_min[0] = min(running_min[0], magnetometer.m.y);
+    running_min[0] = min(running_min[0], magnetometer.m.z);
+
+    running_max[0] = max(running_max[0], magnetometer.m.x);
+    running_max[0] = max(running_max[0], magnetometer.m.y);
+    running_max[0] = max(running_max[0], magnetometer.m.z);
+
+    delay(100);
+}
 
 void readSensors(void *param)
 {
@@ -124,9 +115,9 @@ void readSensors(void *param)
         sensor_packet.gyro_data[1] = (gyroscope.g.y * GYRO_NORMALIZATION) - gyro_rate_bias;
         sensor_packet.gyro_data[2] = (gyroscope.g.z * GYRO_NORMALIZATION) - gyro_rate_bias;
         
-        sensor_packet.mag_data[0] = magnetometer.m.x - mag_field_base[0];
-        sensor_packet.mag_data[1] = magnetometer.m.y - mag_field_base[1];
-        sensor_packet.mag_data[2] = magnetometer.m.z - mag_field_base[2];
+        sensor_packet.mag_data[0] = magnetometer.m.x;
+        sensor_packet.mag_data[1] = magnetometer.m.y;
+        sensor_packet.mag_data[2] = magnetometer.m.z;
 
         sensor_packet.timestamp = xTaskGetTickCount();
 
