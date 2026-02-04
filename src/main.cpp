@@ -10,10 +10,10 @@ LSM6 gyroscope;
 const float GYRO_NORMALIZATION = 0.0875;
 
 LIS3MDL magnetometer;
-const float MAG_NORMALIZATION = RAD_TO_DEG;
+LIS3MDL::vector<int16_t> running_min = {32767, 32767, 32767}, running_max = {-32768, -32768, -32768};
 
-#define EEPROM_X_OFFSET 0
-#define EEPROM_Y_OFFSET 4
+#define EEPROM_MAG_X_OFFSET 0
+#define EEPROM_MAG_Y_OFFSET 4
 
 QueueHandle_t sensor_queue;
 QueueHandle_t ahrs_queue;
@@ -21,9 +21,9 @@ float ahrs_dt = 0.001;
 
 struct sensorPacket
 {
-    long timestamp = 0;
-    float gyro_data[3] = {0.0, 0.0, 0.0};
-    float mag_data[3] = {0.0, 0.0, 0.0};
+    double timestamp = 0;
+    double gyro_data[3] = {0.0, 0.0, 0.0};
+    double mag_data[3] = {0.0, 0.0, 0.0};
 };
 
 struct ahrsPacket
@@ -57,6 +57,8 @@ void initalizeLIS3MDL(void)
     }
 
     else { Serial.println("Successfully initialized LIS3MDL"); }
+
+    magnetometer.enableDefault();
 }
 
 void calibrateLSM6(void) { }
@@ -79,6 +81,14 @@ void readSensors(void *param)
         sensor_packet.gyro_data[1] = gyroscope.g.y * GYRO_NORMALIZATION;
         sensor_packet.gyro_data[2] = gyroscope.g.z * GYRO_NORMALIZATION;
 
+        running_min.x = min(running_min.x, magnetometer.m.x);
+        running_min.y = min(running_min.y, magnetometer.m.y);
+        running_min.z = min(running_min.z, magnetometer.m.z);
+
+        running_max.x = max(running_max.x, magnetometer.m.x);
+        running_max.y = max(running_max.y, magnetometer.m.y);
+        running_max.z = max(running_max.z, magnetometer.m.z);
+        
         sensor_packet.mag_data[0] = magnetometer.m.x;
         sensor_packet.mag_data[1] = magnetometer.m.y;
         sensor_packet.mag_data[2] = magnetometer.m.z;
@@ -100,7 +110,7 @@ void updateAHRS(void *param)
 
     while(1)
     {
-        xQueueReceive(sensor_queue, &sensor_packet, portMAX_DELAY);
+        xQueuePeek(sensor_queue, &sensor_packet, portMAX_DELAY);
         xQueueReceive(ahrs_queue, &ahrs_packet, portMAX_DELAY);
 
         ahrs_packet_new.gyro_rate = sensor_packet.gyro_data[2];
