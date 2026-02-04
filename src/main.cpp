@@ -6,10 +6,8 @@
 #include <Servo.h>
 #include <PID_v1.h>
 
-// imu + ahrs variables
 LSM6 lsm6;
 const float GYRO_CALIBRATION_SAMPLES = 500;
-const float LSM6_IMU_NORMALIZATION = 0.00061;
 const float LSM6_GYRO_NORMALIZATION = 0.00875;
 
 Adafruit_LIS3MDL lis3;
@@ -38,7 +36,7 @@ bool solenoid_state = false;
 const int OPEN_TIME = 250, CLOSE_TIME = 750;
 const int SOLENOID_PIN = D7;
 
-struct imuPacket
+struct sensorPacket
 {
     long timestamp = 0;
     float lsm6_imu[3] = {0.0, 0.0, 0.0};
@@ -51,9 +49,6 @@ struct ahrsPacket
     long timestamp = 0;
     float angles[3] = {0.0, 0.0, 0.0};
     float rates[3] = {0.0, 0.0, 0.0};
-    float position[3] = {0.0, 0.0, 0.0};
-    float velocity[3] = {0.0, 0.0, 0.0};
-    float acceleration[3] = {0.0, 0.0, 0.0};
 };
 
 void IRAM_ATTR limitSwitchISR() { trigger = true; }
@@ -90,9 +85,9 @@ void initalizeLIS3(void)
     }
 }
 
-void readIMU(void *param)
+void readSensors(void *param)
 {
-    imuPacket imu_packet;
+    sensorPacket sensor_packet;
 
     float gyro_bias[3] = {0.0, 0.0, 0.0};
 
@@ -122,30 +117,26 @@ void readIMU(void *param)
     {
         lsm6.read();
 
-        imu_packet.timestamp = xTaskGetTickCount();
+        sensor_packet.timestamp = xTaskGetTickCount();
 
-        imu_packet.lsm6_imu[0] = lsm6.a.x * LSM6_IMU_NORMALIZATION;
-        imu_packet.lsm6_imu[1] = lsm6.a.y * LSM6_IMU_NORMALIZATION;
-        imu_packet.lsm6_imu[2] = lsm6.a.z * LSM6_IMU_NORMALIZATION;
-
-        imu_packet.lsm6_gyro[0] = (lsm6.g.x - gyro_bias[0]) * LSM6_GYRO_NORMALIZATION;
-        imu_packet.lsm6_gyro[1] = (lsm6.g.y - gyro_bias[1]) * LSM6_GYRO_NORMALIZATION;
-        imu_packet.lsm6_gyro[2] = (lsm6.g.z - gyro_bias[2]) * LSM6_GYRO_NORMALIZATION;
+        sensor_packet.lsm6_gyro[0] = (lsm6.g.x - gyro_bias[0]) * LSM6_GYRO_NORMALIZATION;
+        sensor_packet.lsm6_gyro[1] = (lsm6.g.y - gyro_bias[1]) * LSM6_GYRO_NORMALIZATION;
+        sensor_packet.lsm6_gyro[2] = (lsm6.g.z - gyro_bias[2]) * LSM6_GYRO_NORMALIZATION;
 
         lis3.read();
 
-        imu_packet.lis3_mag[0] = lis3.x;
-        imu_packet.lis3_mag[1] = lis3.y;
-        imu_packet.lis3_mag[2] = lis3.z;
+        sensor_packet.lis3_mag[0] = lis3.x;
+        sensor_packet.lis3_mag[1] = lis3.y;
+        sensor_packet.lis3_mag[2] = lis3.z;
 
-        xQueueOverwrite(imu_queue, &imu_packet);
+        xQueueOverwrite(imu_queue, &sensor_packet);
         xTaskDelayUntil(&last_wake, period);
     }
 }
 
 void updateAHRS(void *param)
 {
-    imuPacket imu_packet;
+    sensorPacket sensor_packet;
     ahrsPacket ahrs_packet = {};
 
     const TickType_t period = pdMS_TO_TICKS(1);
@@ -156,16 +147,12 @@ void updateAHRS(void *param)
     {
         vTaskDelayUntil(&last_wake, period);
 
-        if (xQueuePeek(imu_queue, &imu_packet, 0) == pdTRUE)
+        if (xQueuePeek(imu_queue, &sensor_packet, 0) == pdTRUE)
         {
             for (int i = 0; i < 3; i++)
             {
-                ahrs_packet.rates[i] = imu_packet.lsm6_gyro[i];
+                ahrs_packet.rates[i] = sensor_packet.lsm6_gyro[i];
                 ahrs_packet.angles[i] += ahrs_packet.rates[i] * dt;
-
-                ahrs_packet.acceleration[i] = imu_packet.lsm6_imu[i];
-                ahrs_packet.velocity[i] += ahrs_packet.acceleration[i] * dt;
-                ahrs_packet.position[i] += ahrs_packet.velocity[i] * dt;
             }
 
             orientation_z = ahrs_packet.angles[2];
@@ -262,16 +249,6 @@ void updateSerial(void *param)
         Serial.print(",angle_z:" + String(ahrs_packet.angles[2]));
         Serial.print(",clicks:" + String(clicks));
         Serial.print(",steering_angle_delta:" + String(steering_angle_delta));
-
-        // Serial.print(",accel_x:" + String(ahrs_packet.acceleration[0]));
-        // Serial.print(",accel_y:" + String(ahrs_packet.acceleration[1]));
-        // Serial.print(",accel_z:" + String(ahrs_packet.acceleration[2]));
-        // Serial.print(",velocity_x:" + String(ahrs_packet.velocity[0]));
-        // Serial.print(",velocity_y:" + String(ahrs_packet.velocity[1]));
-        // Serial.print(",velocity_z:" + String(ahrs_packet.velocity[2]));
-        // Serial.print(",position_x:" + String(ahrs_packet.position[0]));
-        // Serial.print(",position_y:" + String(ahrs_packet.position[1]));
-        // Serial.print(",position_z:" + String(ahrs_packet.position[2]));
         Serial.println();
 
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -287,7 +264,7 @@ void setup()
     initializeLSM6();
     initalizeLIS3();
 
-    imu_queue = xQueueCreate(1, sizeof(imuPacket));
+    imu_queue = xQueueCreate(1, sizeof(sensorPacket));
     ahrs_queue = xQueueCreate(1, sizeof(ahrsPacket));
 
     ahrsPacket initial_ahrs;
@@ -303,7 +280,7 @@ void setup()
     
     pinMode(SOLENOID_PIN, OUTPUT);
 
-    xTaskCreate(readIMU, "IMU", 4096, NULL, 6, NULL);
+    xTaskCreate(readSensors, "IMU", 4096, NULL, 6, NULL);
     xTaskCreate(updateAHRS, "AHRS", 4096, NULL, 5, NULL);
     xTaskCreate(moveServo, "SERVO", 4096, NULL, 4, NULL);
     xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 3, NULL);
