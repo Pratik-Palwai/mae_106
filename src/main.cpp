@@ -14,9 +14,12 @@ float gyro_mag_offset = 0.0;
 
 LIS3MDL magnetometer;
 int16_t running_min[3] = {32767, 32767, 32767}, running_max[3] = {0, 0, 0};
-int x_offset = 0, y_offset = 0;
+int mag_x_offset = 0, mag_y_offset = 0;
+float mag_x_scaling = 1.0, mag_y_scaling = 1.0;
 #define EEPROM_MAG_X_OFFSET 0
 #define EEPROM_MAG_Y_OFFSET 4
+#define EEPROM_MAG_X_SCALING 8
+#define EEPROM_MAG_Y_SCALING 12
 
 QueueHandle_t sensor_queue;
 QueueHandle_t ahrs_queue;
@@ -30,7 +33,7 @@ Servo steering_servo;
 const int SERVO_PIN = D1;
 
 const int SOLENOID_PIN = D7;
-const int OPEN_TIME = 0.250, CLOSE_TIME = 0.750;
+const int OPEN_TIME = 250, CLOSE_TIME = 750;
 bool solenoid_state = false;
 
 struct sensorPacket
@@ -49,6 +52,13 @@ struct ahrsPacket
     float fused_heading = 0.0;
 };
 
+struct robotState
+{
+    float heading = 0.0;
+    float clicks = 0.0;
+    enum turning_state { STRAIGHT_0, STRAIGHT_1, STRAIGHT_2 };
+};
+
 float deltaTheta(float a, float b)
 {
     float c = a - b;
@@ -58,7 +68,7 @@ float deltaTheta(float a, float b)
     return c;
 }
 
-void IRAM_ATTR limitSwitchISR() { trigger = false; }
+void IRAM_ATTR limitSwitchISR() { trigger = true; }
 
 void initializeLSM6(void)
 {
@@ -125,35 +135,45 @@ void calibrateLIS3MDL(void)
         delay(10);
     }
 
-    x_offset = (x_max + x_min) / 2.0;
-    y_offset = (y_max + y_min) / 2.0;
+    mag_x_offset = (x_max + x_min) / 2.0;
+    mag_y_offset = (y_max + y_min) / 2.0;
 
-    EEPROM.put(EEPROM_MAG_X_OFFSET, x_offset);
-    EEPROM.put(EEPROM_MAG_Y_OFFSET, y_offset);
+    float radius_x = (x_max - x_min) / 2.0;
+    float radius_y = (y_max - y_min) / 2.0;
+    float radius_avg = (radius_x + radius_y) / 2.0;
+
+    mag_x_scaling = radius_avg / radius_x;
+    mag_y_scaling = radius_avg / radius_y;
+
+    EEPROM.put(EEPROM_MAG_X_OFFSET, mag_x_offset);
+    EEPROM.put(EEPROM_MAG_Y_OFFSET, mag_y_offset);
+    EEPROM.put(EEPROM_MAG_X_SCALING, mag_x_scaling);
+    EEPROM.put(EEPROM_MAG_Y_SCALING, mag_y_scaling);
 
     Serial.println("    Finished");
-    Serial.println("    x_offset:" + String(x_offset) + " | y_offset:" + String(y_offset));
+    Serial.println("    mag_x_offset:" + String(mag_x_offset) + " | mag_y_offset:" + String(mag_y_offset));
+    Serial.println("    mag_x_scaling:" + String(mag_x_scaling) + " | mag_y_scaling:" + String(mag_y_scaling));
 }
 
 void readSensors(void *param)
 {
-    sensorPacket pkt;
+    sensorPacket sensor_packet;
 
     while (1)
     {
         gyroscope.read();
         magnetometer.read();
 
-        pkt.timestamp = xTaskGetTickCount();
-        pkt.gyro_data[0] = gyroscope.g.x * GYRO_NORMALIZATION;
-        pkt.gyro_data[1] = gyroscope.g.y * GYRO_NORMALIZATION;
-        pkt.gyro_data[2] = - ((gyroscope.g.z * GYRO_NORMALIZATION) - gyro_rate_bias);
+        sensor_packet.timestamp = xTaskGetTickCount();
+        sensor_packet.gyro_data[0] = gyroscope.g.x * GYRO_NORMALIZATION;
+        sensor_packet.gyro_data[1] = gyroscope.g.y * GYRO_NORMALIZATION;
+        sensor_packet.gyro_data[2] = - ((gyroscope.g.z * GYRO_NORMALIZATION) - gyro_rate_bias);
 
-        pkt.mag_data[0] = magnetometer.m.x - x_offset;
-        pkt.mag_data[1] = magnetometer.m.y - y_offset;
-        pkt.mag_data[2] = magnetometer.m.z;
+        sensor_packet.mag_data[0] = (magnetometer.m.x - mag_x_offset) * mag_x_scaling;
+        sensor_packet.mag_data[1] = (magnetometer.m.y - mag_y_offset) * mag_y_scaling;
+        sensor_packet.mag_data[2] = magnetometer.m.z;
 
-        xQueueOverwrite(sensor_queue, &pkt);
+        xQueueOverwrite(sensor_queue, &sensor_packet);
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
@@ -170,7 +190,7 @@ float computeMagHeading(const sensorPacket &sensor_packet)
     LIS3MDL::vector_cross(&a, &E, &N);
     LIS3MDL::vector_normalize(&N);
 
-    LIS3MDL::vector<float> from = {1.0f, 0.0f, 0.0f};
+    LIS3MDL::vector<float> from = {0.0f, 1.0f, 0.0f};
 
     float heading = atan2(LIS3MDL::vector_dot(&E, &from), LIS3MDL::vector_dot(&N, &from));
     heading *= RAD_TO_DEG;
@@ -211,7 +231,7 @@ void computeAHRS(void *param)
         float fused_heading = ALPHA * gyro_heading + (1.0f - ALPHA) * mag_heading;
 
         ahrs_packet_new.timestamp = xTaskGetTickCount();
-        ahrs_packet_new.gyro_rate = gyro_rate, 360.0;
+        ahrs_packet_new.gyro_rate = gyro_rate;
         ahrs_packet_new.gyro_heading = fmod(gyro_heading, 360.0);
         ahrs_packet_new.mag_heading = fmod(mag_heading, 360.0);
         ahrs_packet_new.fused_heading = fmod(fused_heading, 360.0);
@@ -238,15 +258,24 @@ void handleSwitch(void *param)
     }
 }
 
-void steerRobot(void *param) { }
+void steerRobot(void *param)
+{
+    while(1)
+    {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
 
 void fireSolenoid(void *param)
 {
-    digitalWrite(SOLENOID_PIN, solenoid_state);
-    solenoid_state != solenoid_state;
+    while(1)
+    {
+        digitalWrite(SOLENOID_PIN, solenoid_state);
+        solenoid_state = !solenoid_state;
 
-    if (solenoid_state) { vTaskDelay(CLOSE_TIME); }
-    else { vTaskDelay(OPEN_TIME); }
+        if (solenoid_state) { vTaskDelay(pdMS_TO_TICKS(CLOSE_TIME)); }
+        else { vTaskDelay(pdMS_TO_TICKS(OPEN_TIME)); }
+    }
 }
 
 void serialOutput(void *param)
@@ -270,7 +299,7 @@ void serialOutput(void *param)
         // Serial.print(",clicks:" + String(clicks));
         Serial.println();
 
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -304,9 +333,9 @@ void setup()
 
     xTaskCreate(readSensors, "SENSE", 4096, NULL, 6, NULL);
     xTaskCreate(computeAHRS, "AHRS", 4096, NULL, 5, NULL);
-    // xTaskCreate(steerRobot, "SERVO", 4096, NULL, 4, NULL);
-    // xTaskCreate(fireSolenoid, "FIRE", 4096, NULL, 3, NULL);
-    // xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 2, NULL);
+    xTaskCreate(steerRobot, "SERVO", 4096, NULL, 4, NULL);
+    xTaskCreate(fireSolenoid, "FIRE", 4096, NULL, 3, NULL);
+    xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 2, NULL);
     xTaskCreate(serialOutput, "DATA", 4096, NULL, 1, NULL);
 }
 
