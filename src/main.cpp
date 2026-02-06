@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <numeric>
 #include <Wire.h>
-#include <EEPROM.h>
 #include <LSM6.h>
 #include <LIS3MDL.h>
 #include <Servo.h>
@@ -13,20 +12,15 @@ float gyro_rate_bias = 0.0;
 float gyro_mag_offset = 0.0;
 
 LIS3MDL magnetometer;
-int16_t running_min[3] = {32767, 32767, 32767}, running_max[3] = {0, 0, 0};
 int mag_x_offset = 0, mag_y_offset = 0;
 float mag_x_scaling = 1.0, mag_y_scaling = 1.0;
-#define EEPROM_MAG_X_OFFSET 0
-#define EEPROM_MAG_Y_OFFSET 4
-#define EEPROM_MAG_X_SCALING 8
-#define EEPROM_MAG_Y_SCALING 12
 
 QueueHandle_t sensor_queue;
 QueueHandle_t ahrs_queue;
 float ahrs_dt = 0.001;
 
 const int LIMIT_SWITCH_PIN = D0, DEBOUNCE_TIME = 50;
-bool trigger = false;
+bool trigger = false, latch = false;
 volatile int clicks = 0;
 
 Servo steering_servo;
@@ -34,7 +28,13 @@ const int SERVO_PIN = D1;
 
 const int SOLENOID_PIN = D7;
 const int OPEN_TIME = 250, CLOSE_TIME = 750;
-bool solenoid_state = false;
+volatile bool solenoid_state = false;
+
+double pid_input = 0.0, setpoint = 0.0, pid_output = 0.0;
+const float K_P = 3.0, K_I = 0.0, K_D = 0.0;
+PID steering_correction(&pid_input, &pid_output, &setpoint, K_P, K_I, K_D, REVERSE);
+
+enum robot_state { STRAIGHT_0, TURNING, STRAIGHT_1 };
 
 struct sensorPacket
 {
@@ -50,13 +50,6 @@ struct ahrsPacket
     float gyro_heading = 0.0;
     float mag_heading = 0.0;
     float fused_heading = 0.0;
-};
-
-struct robotState
-{
-    float heading = 0.0;
-    float clicks = 0.0;
-    enum turning_state { STRAIGHT_0, STRAIGHT_1, STRAIGHT_2 };
 };
 
 float deltaTheta(float a, float b)
@@ -117,11 +110,12 @@ void calibrateLSM6(void)
 
 void calibrateLIS3MDL(void)
 {
-    Serial.println("Starting magnetometer calibration loop ... ");
-
     float x_min = 32767, x_max = -32768;
     float y_min = 32767, y_max = -32768;
+    int16_t running_min[3] = {32767, 32767, 32767}, running_max[3] = {0, 0, 0};
 
+    Serial.println("Starting magnetometer calibration loop ... ");
+    
     unsigned long t0 = millis();
     while (millis() - t0 < 10000)
     {
@@ -144,11 +138,6 @@ void calibrateLIS3MDL(void)
 
     mag_x_scaling = radius_avg / radius_x;
     mag_y_scaling = radius_avg / radius_y;
-
-    EEPROM.put(EEPROM_MAG_X_OFFSET, mag_x_offset);
-    EEPROM.put(EEPROM_MAG_Y_OFFSET, mag_y_offset);
-    EEPROM.put(EEPROM_MAG_X_SCALING, mag_x_scaling);
-    EEPROM.put(EEPROM_MAG_Y_SCALING, mag_y_scaling);
 
     Serial.println("    Finished");
     Serial.println("    mag_x_offset:" + String(mag_x_offset) + " | mag_y_offset:" + String(mag_y_offset));
@@ -190,7 +179,7 @@ float computeMagHeading(const sensorPacket &sensor_packet)
     LIS3MDL::vector_cross(&a, &E, &N);
     LIS3MDL::vector_normalize(&N);
 
-    LIS3MDL::vector<float> from = {0.0f, 1.0f, 0.0f};
+    LIS3MDL::vector<float> from = {0.0f, 0.0f, 1.0f};
 
     float heading = atan2(LIS3MDL::vector_dot(&E, &from), LIS3MDL::vector_dot(&N, &from));
     heading *= RAD_TO_DEG;
@@ -237,10 +226,10 @@ void computeAHRS(void *param)
         ahrs_packet_new.fused_heading = fmod(fused_heading, 360.0);
 
         xQueueOverwrite(ahrs_queue, &ahrs_packet_new);
-
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
+
 
 void handleSwitch(void *param)
 {
@@ -248,10 +237,14 @@ void handleSwitch(void *param)
     {
         trigger = (digitalRead(LIMIT_SWITCH_PIN));
 
-        if (trigger)
+        if (trigger != latch)
         {
-            clicks++;
-            trigger = false;
+            vTaskDelay(pdTICKS_TO_MS(DEBOUNCE_TIME));
+            if (trigger != latch)
+            {
+                trigger = !trigger;
+                latch = !latch;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -262,7 +255,12 @@ void steerRobot(void *param)
 {
     while(1)
     {
-        vTaskDelay(pdMS_TO_TICKS(100));
+        ahrsPacket ahrs_packet;
+        xQueuePeek(ahrs_queue, &ahrs_packet, portMAX_DELAY);
+        pid_input = ahrs_packet.fused_heading;
+
+        steering_correction.Compute();
+        steering_servo.write(int(90.0 + pid_output));
     }
 }
 
@@ -293,13 +291,13 @@ void serialOutput(void *param)
         Serial.print(",gyro_heading:" + String(ahrs_packet.gyro_heading));
         Serial.print(",mag_heading:" + String(ahrs_packet.mag_heading));
         Serial.print(",fused_heading:" + String(ahrs_packet.fused_heading));
-        // Serial.print(",mag_field_x:" + String(sensor_packet.mag_data[0]));
-        // Serial.print(",mag_field_y:" + String(sensor_packet.mag_data[1]));
-        // Serial.print(",mag_field_z:" + String(sensor_packet.mag_data[2]));
+        Serial.print(",mag_field_x:" + String(sensor_packet.mag_data[0]));
+        Serial.print(",mag_field_y:" + String(sensor_packet.mag_data[1]));
+        Serial.print(",mag_field_z:" + String(sensor_packet.mag_data[2]));
         // Serial.print(",clicks:" + String(clicks));
         Serial.println();
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(25));
     }
 }
 
@@ -330,6 +328,7 @@ void setup()
     attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, RISING);
 
     steering_servo.attach(SERVO_PIN);
+    steering_correction.SetOutputLimits(-45.0, 45.0);
 
     xTaskCreate(readSensors, "SENSE", 4096, NULL, 6, NULL);
     xTaskCreate(computeAHRS, "AHRS", 4096, NULL, 5, NULL);
