@@ -8,9 +8,9 @@
 #include <SimpleKalmanFilter.h>
 
 LSM6 gyroscope;
-const int GYRO_CALIBRATION_SAMPLES = 5000;
+const int GYRO_CALIBRATION_SAMPLES = 2000;
 const float GYRO_NORMALIZATION = 0.00891089108;
-float gyro_rate_bias = -0.73;
+float gyro_rate_bias = 0.0;
 float gyro_mag_offset = 0.0;
 
 LIS3MDL magnetometer;
@@ -18,15 +18,15 @@ const int MAGNETOMETER_CALIBRATION_TIME = 10000;
 int mag_x_offset = 0, mag_y_offset = 0;
 float mag_x_scaling = 1.0, mag_y_scaling = 1.0;
 
-SimpleKalmanFilter heading_correction(10, 10, 0.01);
+SimpleKalmanFilter heading_correction(6, 6, 0.01);
 
 QueueHandle_t sensor_queue;
 QueueHandle_t ahrs_queue;
-float ahrs_dt = 0.001;
+
+const int BUZZER_PIN = D9;
 
 const int LIMIT_SWITCH_PIN = D0, DEBOUNCE_TIME = 50;
-bool trigger = false, latch = false;
-volatile int clicks = 0;
+volatile bool trigger = false;
 
 Servo steering_servo;
 const int SERVO_PIN = D1;
@@ -35,11 +35,9 @@ const int SOLENOID_PIN = D7;
 const int OPEN_TIME = 250, CLOSE_TIME = 750;
 volatile bool solenoid_state = false;
 
-double pid_input = 0.0, setpoint = 0.0, pid_output = 0.0;
+double pid_input = 0.0, desired_heading = 0.0, pid_output = 0.0;
 const float K_P = 3.0, K_I = 0.0, K_D = 0.0;
-PID steering_correction(&pid_input, &pid_output, &setpoint, K_P, K_I, K_D, REVERSE);
-
-enum robot_state { STRAIGHT_0, TURNING, STRAIGHT_1 };
+PID steering_correction(&pid_input, &pid_output, &desired_heading, K_P, K_I, K_D, REVERSE);
 
 struct sensorPacket
 {
@@ -55,7 +53,18 @@ struct ahrsPacket
     float gyro_heading = 0.0;
     float mag_heading = 0.0;
     float filtered_heading = 0.0;
+    int clicks = 0;
+    int robot_heading = 0; // 0:initial heading, 1:turning, 2:final heading
 };
+
+inline void delayCalibration()
+{
+    delay(1000);
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(500);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(1000);
+}
 
 float deltaTheta(float a, float b)
 {
@@ -111,6 +120,7 @@ void calibrateLSM6(void)
     {
         gyroscope.read();
         rates_sum += gyroscope.g.z * GYRO_NORMALIZATION;
+        delay(2);
     }
 
     Serial.println("    Finished");
@@ -162,7 +172,7 @@ sensorPacket getSensorData()
     gyroscope.read();
     magnetometer.read();
 
-    sensor_packet.timestamp = xTaskGetTickCount();
+    sensor_packet.timestamp = pdTICKS_TO_MS(xTaskGetTickCount());
     sensor_packet.gyro_data[0] = gyroscope.g.x * GYRO_NORMALIZATION;
     sensor_packet.gyro_data[1] = gyroscope.g.y * GYRO_NORMALIZATION;
     sensor_packet.gyro_data[2] = - ((gyroscope.g.z * GYRO_NORMALIZATION) - gyro_rate_bias);
@@ -192,8 +202,8 @@ void gyroOffset()
     float mag_sum = 0.0;
     int samples = 0;
 
-    unsigned long start = micros();
-    while (micros() - start < 2000000)
+    unsigned long start = millis();
+    while (millis() - start < 2000)
     {
         sensorPacket s = getSensorData();
         mag_sum += computeMagHeading(s);
@@ -217,7 +227,7 @@ void readSensorsRTOS(void *param)
     {
         sensorPacket sensor_packet = getSensorData();
         xQueueOverwrite(sensor_queue, &sensor_packet);
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -229,34 +239,31 @@ void computeAHRS(void *param)
 
     const float ALPHA = 0.02;
     TickType_t last_wake = xTaskGetTickCount();
-    TickType_t period = pdMS_TO_TICKS(1);
 
     while (1)
     {
         xQueuePeek(sensor_queue, &sensor_packet, portMAX_DELAY);
         xQueuePeek(ahrs_queue, &ahrs_packet, portMAX_DELAY);
 
-        ahrs_dt = (micros() - sensor_packet.timestamp) / 1000000;
+        const float AHRS_DT = 0.001;
 
         float gyro_rate = sensor_packet.gyro_data[2];
-        float gyro_heading = ahrs_packet.gyro_heading + (gyro_rate * ahrs_dt);
-        float corrected_gyro_heading = wrapAngle(gyro_heading + gyro_mag_offset);
+        float gyro_heading = ahrs_packet.gyro_heading + (gyro_rate * AHRS_DT);
+        float corrected_gyro_heading = wrapAngle(gyro_heading);
 
         float mag_heading = computeMagHeading(sensor_packet);
 
         float filtered_heading = heading_correction.updateEstimate(mag_heading);
 
-        // float error = deltaTheta(mag_heading, corrected_gyro_heading);
-        // float filtered_heading = wrapAngle(corrected_gyro_heading + (1.0 - ALPHA) * error);
-
-        ahrs_packet_new.timestamp = xTaskGetTickCount();
+        ahrs_packet_new.timestamp = pdTICKS_TO_MS(xTaskGetTickCount());
         ahrs_packet_new.gyro_rate = gyro_rate;
         ahrs_packet_new.gyro_heading = fmod(corrected_gyro_heading, 360.0);
         ahrs_packet_new.mag_heading = fmod(mag_heading, 360.0);
         ahrs_packet_new.filtered_heading = fmod(filtered_heading, 360.0);
+        ahrs_packet_new.robot_heading = ahrs_packet.robot_heading;
 
         xQueueOverwrite(ahrs_queue, &ahrs_packet_new);
-        xTaskDelayUntil(&last_wake, period);
+        xTaskDelayUntil(&last_wake, pdMS_TO_TICKS(AHRS_DT * 1000));
     }
 }
 
@@ -265,34 +272,76 @@ void handleSwitch(void *param)
 {
     while (1)
     {
-        trigger = (digitalRead(LIMIT_SWITCH_PIN));
-
-        if (trigger != latch)
+        if (trigger)
         {
-            vTaskDelay(pdTICKS_TO_MS(DEBOUNCE_TIME));
-            if (trigger != latch)
+            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_TIME));
+
+            if (digitalRead(LIMIT_SWITCH_PIN) == LOW)
             {
-                trigger = !trigger;
-                latch = !latch;
+                ahrsPacket ahrs_packet;
+                xQueueReceive(ahrs_queue, &ahrs_packet, portMAX_DELAY);
+                
+                ahrs_packet.clicks++;
+                xQueueOverwrite(ahrs_queue, &ahrs_packet);
             }
+
+            trigger = false;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
+
 void steerRobot(void *param)
 {
+    static bool initialized = false;
+    static float initial_heading = 0.0;
+    static float turn_target = 90.0;
+
     while(1)
     {
         ahrsPacket ahrs_packet;
         xQueuePeek(ahrs_queue, &ahrs_packet, portMAX_DELAY);
-        pid_input = ahrs_packet.filtered_heading;
+
+        float current_heading = ahrs_packet.filtered_heading;
+        pid_input = current_heading;
+
+        if (!initialized)
+        {
+            initial_heading = current_heading;
+            desired_heading = current_heading;
+            initialized = true;
+        }
+
+        if ((ahrs_packet.robot_heading == 0) && (ahrs_packet.clicks > 10))
+        {
+            ahrs_packet.robot_heading = 1;
+            turn_target = wrapAngle(current_heading + 90.0);
+        }
+
+        if (ahrs_packet.robot_heading == 1)
+        {
+            float angle_error = deltaTheta(current_heading, turn_target);
+
+            if (abs(angle_error) < 15.0)
+            {
+                ahrs_packet.robot_heading = 2;
+                desired_heading = turn_target;
+            }
+        }
+
+        if (ahrs_packet.robot_heading == 0) { desired_heading = initial_heading; }
+        else if (ahrs_packet.robot_heading == 1) { desired_heading = turn_target; }
+        else if (ahrs_packet.robot_heading == 2) { desired_heading = turn_target; }
 
         steering_correction.Compute();
-        steering_servo.write(int(90.0 + pid_output));
+        int servo_command = int(90.0 + pid_output);
+        servo_command = constrain(servo_command, 45, 135);
+        steering_servo.write(servo_command);
 
-        vTaskDelay(100);
+        xQueueOverwrite(ahrs_queue, &ahrs_packet);
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
@@ -318,11 +367,11 @@ void serialOutput(void *param)
         xQueuePeek(ahrs_queue, &ahrs_packet, 0);
 
         Serial.print(">ahrs_t:" + String(ahrs_packet.timestamp));
-        // Serial.print(",gyro_rate:" + String(ahrs_packet.gyro_rate));
-        // Serial.print(",gyro_heading:" + String(ahrs_packet.gyro_heading));
+        Serial.print(",gyro_rate:" + String(ahrs_packet.gyro_rate));
+        Serial.print(",gyro_heading:" + String(ahrs_packet.gyro_heading));
         Serial.print(",mag_heading:" + String(ahrs_packet.mag_heading));
         Serial.print(",filtered_heading:" + String(ahrs_packet.filtered_heading));
-        // Serial.print(",clicks:" + String(clicks));
+        Serial.print(",clicks:" + String(ahrs_packet.clicks));
         Serial.println();
 
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -335,16 +384,18 @@ void setup()
     delay(2000);
     Wire.begin();
 
+    delayCalibration();
     initializeLSM6();
     initalizeLIS3MDL();
+    delayCalibration();
 
-    delay(1000);
     calibrateLIS3MDL();
-    // delay(2000);
-    // calibrateLSM6();
-    // delay(2000);
-    // gyroOffset();
-    delay(1000);
+    delayCalibration();
+    calibrateLSM6();
+    delayCalibration();
+
+    gyroOffset();
+    delayCalibration();
 
     sensor_queue = xQueueCreate(1, sizeof(sensorPacket));
     ahrs_queue = xQueueCreate(1, sizeof(ahrsPacket));
@@ -352,14 +403,17 @@ void setup()
     ahrsPacket initial_ahrs;
     initial_ahrs.timestamp = xTaskGetTickCount();
     initial_ahrs.gyro_heading = gyro_mag_offset;
+    
     xQueueOverwrite(ahrs_queue, &initial_ahrs);
 
     sensorPacket initial_sensor;
     initial_sensor.timestamp = xTaskGetTickCount();
     xQueueOverwrite(sensor_queue, &initial_sensor);
 
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(SOLENOID_PIN, OUTPUT);
     pinMode(LIMIT_SWITCH_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, RISING);
+    attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, FALLING);
 
     steering_servo.attach(SERVO_PIN);
     steering_correction.SetOutputLimits(-45.0, 45.0);
