@@ -5,12 +5,11 @@
 #include <LIS3MDL.h>
 #include <Servo.h>
 #include <PID_v1.h>
-#include <SimpleKalmanFilter.h>
 
 LSM6 gyroscope;
 const int GYRO_CALIBRATION_SAMPLES = 2000;
 const float GYRO_NORMALIZATION = 0.00891089108;
-float gyro_rate_bias = 2.5;
+float gyro_rate_bias = 0.0;
 float gyro_mag_offset = 0.0;
 
 LIS3MDL magnetometer;
@@ -18,11 +17,8 @@ const int MAGNETOMETER_CALIBRATION_TIME = 10000;
 int mag_x_offset = 0, mag_y_offset = 0;
 float mag_x_scaling = 1.0, mag_y_scaling = 1.0;
 
-SimpleKalmanFilter heading_correction(6, 6, 0.01);
-
 QueueHandle_t sensor_queue;
 QueueHandle_t ahrs_queue;
-float ahrs_dt = 0.001;
 
 const int BUZZER_PIN = D9;
 
@@ -121,7 +117,7 @@ void calibrateLSM6(void)
     {
         gyroscope.read();
         rates_sum += gyroscope.g.z * GYRO_NORMALIZATION;
-        delay(10);
+        delay(2);
     }
 
     Serial.println("    Finished");
@@ -224,11 +220,14 @@ void readSensorsRTOS(void *param)
 {
     sensorPacket sensor_packet;
 
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(1);
+
     while (1)
     {
         sensorPacket sensor_packet = getSensorData();
         xQueueOverwrite(sensor_queue, &sensor_packet);
-        vTaskDelay(pdMS_TO_TICKS(2));
+        xTaskDelayUntil(&last_wake, period);
     }
 }
 
@@ -238,31 +237,42 @@ void computeAHRS(void *param)
     ahrsPacket ahrs_packet;
     ahrsPacket ahrs_packet_new;
 
-    const float ALPHA = 0.02;
     TickType_t last_wake = xTaskGetTickCount();
-    TickType_t period = pdMS_TO_TICKS(1);
+    const TickType_t period = pdMS_TO_TICKS(1);
 
     while (1)
     {
         xQueuePeek(sensor_queue, &sensor_packet, portMAX_DELAY);
         xQueuePeek(ahrs_queue, &ahrs_packet, portMAX_DELAY);
 
-        ahrs_dt = (millis() - sensor_packet.timestamp) / 1000;
+        const float AHRS_DT = 0.001;
 
         float gyro_rate = sensor_packet.gyro_data[2];
-        float gyro_heading = ahrs_packet.gyro_heading + (gyro_rate * ahrs_dt);
-        float corrected_gyro_heading = wrapAngle(gyro_heading + gyro_mag_offset);
+        float gyro_heading = ahrs_packet.gyro_heading + (gyro_rate * AHRS_DT);
+        float corrected_gyro_heading = wrapAngle(gyro_heading);
 
         float mag_heading = computeMagHeading(sensor_packet);
 
-        float filtered_heading = heading_correction.updateEstimate(mag_heading);
+        static bool initialized = false;
+        static float fused_heading;
 
-        ahrs_packet_new.timestamp = pdTICKS_TO_MS(xTaskGetTickCount());
+        if (!initialized)
+        {
+            fused_heading = gyro_mag_offset;
+            initialized = true;
+        }
+
+        fused_heading = wrapAngle(fused_heading + gyro_rate * AHRS_DT);
+        float mag_error = deltaTheta(mag_heading, fused_heading);
+
+        const float K = 0.01; // smaller values trust gyro more
+        fused_heading = wrapAngle(fused_heading + K * mag_error);
+
+        ahrs_packet_new.filtered_heading = fused_heading;
+        ahrs_packet_new.gyro_heading = corrected_gyro_heading;
         ahrs_packet_new.gyro_rate = gyro_rate;
-        ahrs_packet_new.gyro_heading = fmod(corrected_gyro_heading, 360.0);
-        ahrs_packet_new.mag_heading = fmod(mag_heading, 360.0);
-        ahrs_packet_new.filtered_heading = fmod(filtered_heading, 360.0);
-        ahrs_packet_new.robot_heading = ahrs_packet.robot_heading;
+        ahrs_packet_new.mag_heading = mag_heading;
+        ahrs_packet_new.timestamp = pdTICKS_TO_MS(xTaskGetTickCount());
 
         xQueueOverwrite(ahrs_queue, &ahrs_packet_new);
         xTaskDelayUntil(&last_wake, period);
@@ -272,19 +282,23 @@ void computeAHRS(void *param)
 
 void handleSwitch(void *param)
 {
+    static uint32_t last_time = 0;
+
     while (1)
     {
         if (trigger)
         {
-            vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_TIME));
+            trigger = false;
+            uint32_t now = pdTICKS_TO_MS(xTaskGetTickCount());
 
-            if (digitalRead(LIMIT_SWITCH_PIN) == LOW)
+            if (now - last_time > DEBOUNCE_TIME)
             {
                 ahrsPacket ahrs_packet;
                 xQueueReceive(ahrs_queue, &ahrs_packet, portMAX_DELAY);
-                
                 ahrs_packet.clicks++;
                 xQueueOverwrite(ahrs_queue, &ahrs_packet);
+
+                last_time = now;
             }
 
             trigger = false;
@@ -386,6 +400,14 @@ void setup()
     delay(2000);
     Wire.begin();
 
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(SOLENOID_PIN, OUTPUT);
+    pinMode(LIMIT_SWITCH_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, RISING);
+
+    steering_servo.attach(SERVO_PIN);
+    steering_correction.SetOutputLimits(-45.0, 45.0);
+
     delayCalibration();
     initializeLSM6();
     initalizeLIS3MDL();
@@ -393,8 +415,8 @@ void setup()
 
     calibrateLIS3MDL();
     delayCalibration();
-    // calibrateLSM6();
-    // delayCalibration();
+    calibrateLSM6();
+    delayCalibration();
 
     gyroOffset();
     delayCalibration();
@@ -411,14 +433,6 @@ void setup()
     sensorPacket initial_sensor;
     initial_sensor.timestamp = xTaskGetTickCount();
     xQueueOverwrite(sensor_queue, &initial_sensor);
-
-    pinMode(BUZZER_PIN, OUTPUT);
-    pinMode(SOLENOID_PIN, OUTPUT);
-    pinMode(LIMIT_SWITCH_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, FALLING);
-
-    steering_servo.attach(SERVO_PIN);
-    steering_correction.SetOutputLimits(-45.0, 45.0);
 
     xTaskCreate(readSensorsRTOS, "SENSE", 4096, NULL, 6, NULL);
     xTaskCreate(computeAHRS, "AHRS", 4096, NULL, 5, NULL);
