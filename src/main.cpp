@@ -1,40 +1,48 @@
 #include <Arduino.h>
+#include <EEPROM.h>
 #include <Wire.h>
 #include <LSM6.h>
 #include <LIS3MDL.h>
 #include <Servo.h>
 #include <PID_v1.h>
 
+#define EEPROM_MAG_X_SCALING_ADDRESS 0 // a float uses 4 bytes of memory so the addresses are spaced 4 bytes (32 bits) apart
+#define EEPROM_MAG_Y_SCALING_ADDRESS 4
+#define EEPROM_MAG_X_OFFSET_ADDRESS 8
+#define EEPROM_MAG_Y_OFFSET_ADDRESS 12
+
 // gyroscope variables. adafruit lsm6 library also exists but is more complicated
 LSM6 gyroscope;
-const long GYRO_CALIBRATION_SAMPLES = 15000;
+const long GYRO_CALIBRATION_SAMPLES = 15000; // 15 sec is the amount of time between the "Clear" signal and the race start, it is a good amount of time to calibrate the gyro
 const float GYRO_NORMALIZATION = 0.00891089108;
 float gyro_rate_bias = 0.0;
-float gyro_mag_offset = 0.0;
+float gyro_heading_offset = 180.0;
 
 // magnetometer (compass) variables. again the adafruit library offers more customization but reading the sensor requires more code
 LIS3MDL magnetometer;
 const long MAGNETOMETER_CALIBRATION_TIME = 10000;
 float mag_x_offset = 0, mag_y_offset = 0;
 float mag_x_scaling = 1.0, mag_y_scaling = 1.0;
+float mag_heading_offset = 0.0; // for setting the initial compass heading to 180 before each run
+const bool CALIBRATE_MAG = false; // true:calibrate magnetometer and store offsets/scaling to EEPROM, false:use saved EEPROM values
 
 // RTOS queues. these are better for getting real-time data vs volatiles but it is a little more complicated to read/write from
 QueueHandle_t sensor_queue;
 QueueHandle_t ahrs_queue;
 
-// LED pin. this blinks at the start and end of each calibration
-const int LED_PIN = D6;
+// buzzer pin. this beeps at the start and end of each calibration
+const int BUZZER_PIN = D1;
 
 // limit switch variables. On my robot the switch actuates once per revolution, and ten clicks is where the robot should start turning
 const int LIMIT_SWITCH_PIN = D10, DEBOUNCE_TIME = 5;
-const int CLICKS_BEFORE_TRENCH = 10, CLICKS_IN_TRENCH = 50, CLICKS_AFTER_TRENCH = 10;
+const int CLICKS_BEFORE_TRENCH = 10, CLICKS_IN_TRENCH = 20, CLICKS_AFTER_TRENCH = 10;
 volatile int clicks = 0; // variable is volatile because several tasks read/write to it
 volatile int clicks_on_straight = 0;
 bool trigger = false; // "latch" variable for software debouncing
 
 // servo variables. any PWM-enabled pin can be used for this
 Servo steering_servo;
-const int SERVO_PIN = D1;
+const int SERVO_PIN = D0;
 
 // solenoid variables. adjust open_time and close_time (milliseconds) to maximise distance travelled
 const int SOLENOID_PIN = D7;
@@ -44,7 +52,7 @@ volatile bool solenoid_state = false, actuation = true;
 // pid variables. see steerRobot() task to change turn behavior between left/right (+/- 90.0 deg)
 double pid_input = 0.0, target_heading = 0.0, pid_output = 0.0;
 const float K_P = 0.50, K_I = 0.0, K_D = 0.0; // tune PID constants for verification 2
-PID steering_correction(&pid_input, &pid_output, &target_heading, K_P, K_I, K_D, DIRECT); // pid mode can be DIRECT or REVERSE depending on how the servo and magnetometer are mounted
+PID steering_correction(&pid_input, &pid_output, &target_heading, K_P, K_I, K_D, REVERSE); // pid mode can be DIRECT or REVERSE depending on how the servo and magnetometer are mounted
 
 // sensor packet overview. There is a timestamp for integration, and gyro + compass data on all three axes
 struct sensorPacket
@@ -69,9 +77,9 @@ struct AHRSPacket
 // LED blink before calibration. can be adjusted depending on personal preference and ease of moving the robot
 inline void delayCalibration()
 {
-    digitalWrite(LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, HIGH);
     delay(500);
-    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(BUZZER_PIN, LOW);
     delay(2000);
 }
 
@@ -149,40 +157,65 @@ void calibrateLSM6(void)
 // calibrate local magnetic fields. Spin robot in a circle around magnetometer Z-axis
 void calibrateLIS3MDL(void)
 {
-    float x_min = 32767, x_max = -32768;
-    float y_min = 32767, y_max = -32768;
-
-    Serial.println("Starting magnetometer calibration loop ... ");
-
-    // get x_min, x_max, y_min, y_max of the local b-fields
-    unsigned long start_time = millis();
-    while (millis() - start_time < MAGNETOMETER_CALIBRATION_TIME)
+    if (CALIBRATE_MAG)
     {
-        magnetometer.read();
+        float x_min = 32767, x_max = -32768;
+        float y_min = 32767, y_max = -32768;
 
-        if (magnetometer.m.x < x_min) x_min = magnetometer.m.x;
-        if (magnetometer.m.x > x_max) x_max = magnetometer.m.x;
-        if (magnetometer.m.y < y_min) y_min = magnetometer.m.y;
-        if (magnetometer.m.y > y_max) y_max = magnetometer.m.y;
+        Serial.println("Starting magnetometer calibration loop ... ");
 
-        delay(10);
+        // get x_min, x_max, y_min, y_max of the local b-fields
+        unsigned long start_time = millis();
+        while (millis() - start_time < MAGNETOMETER_CALIBRATION_TIME)
+        {
+            magnetometer.read();
+
+            if (magnetometer.m.x < x_min) x_min = magnetometer.m.x;
+            if (magnetometer.m.x > x_max) x_max = magnetometer.m.x;
+            if (magnetometer.m.y < y_min) y_min = magnetometer.m.y;
+            if (magnetometer.m.y > y_max) y_max = magnetometer.m.y;
+
+            delay(10);
+        }
+
+        // hard-iron correction
+        mag_x_offset = (x_max + x_min) / 2.0;
+        mag_y_offset = (y_max + y_min) / 2.0;
+
+        // soft-iron correction
+        float radius_x = (x_max - x_min) / 2.0;
+        float radius_y = (y_max - y_min) / 2.0;
+        float radius_avg = (radius_x + radius_y) / 2.0;
+
+        mag_x_scaling = radius_avg / radius_x;
+        mag_y_scaling = radius_avg / radius_y;
+
+        Serial.println("    finished");
+        Serial.println("    mag_x_offset:" + String(mag_x_offset) + " | mag_y_offset:" + String(mag_y_offset));
+        Serial.println("    mag_x_scaling:" + String(mag_x_scaling) + " | mag_y_scaling:" + String(mag_y_scaling));
+        
+        EEPROM.put(EEPROM_MAG_X_OFFSET_ADDRESS, mag_x_offset);
+        EEPROM.put(EEPROM_MAG_Y_OFFSET_ADDRESS, mag_y_offset);
+        EEPROM.put(EEPROM_MAG_X_SCALING_ADDRESS, mag_x_scaling);
+        EEPROM.put(EEPROM_MAG_Y_SCALING_ADDRESS, mag_y_scaling);
+
+        EEPROM.commit();
+        Serial.println("    saved calibrations to EEPROM");
     }
 
-    // hard-iron correction
-    mag_x_offset = (x_max + x_min) / 2.0;
-    mag_y_offset = (y_max + y_min) / 2.0;
+    else
+    {
+        Serial.println("Pulling compass calibrations from EEPROM ...");
 
-    // soft-iron correction
-    float radius_x = (x_max - x_min) / 2.0;
-    float radius_y = (y_max - y_min) / 2.0;
-    float radius_avg = (radius_x + radius_y) / 2.0;
+        EEPROM.get(EEPROM_MAG_X_OFFSET_ADDRESS, mag_x_offset);
+        EEPROM.get(EEPROM_MAG_Y_OFFSET_ADDRESS, mag_y_offset);
+        EEPROM.get(EEPROM_MAG_X_SCALING_ADDRESS, mag_x_scaling);
+        EEPROM.get(EEPROM_MAG_Y_SCALING_ADDRESS, mag_y_scaling);
 
-    mag_x_scaling = radius_avg / radius_x;
-    mag_y_scaling = radius_avg / radius_y;
-
-    Serial.println("    finished");
-    Serial.println("    mag_x_offset:" + String(mag_x_offset) + " | mag_y_offset:" + String(mag_y_offset));
-    Serial.println("    mag_x_scaling:" + String(mag_x_scaling) + " | mag_y_scaling:" + String(mag_y_scaling));
+        Serial.println("    finished");
+        Serial.println("    mag_x_offset:" + String(mag_x_offset) + " | mag_y_offset:" + String(mag_y_offset));
+        Serial.println("    mag_x_scaling:" + String(mag_x_scaling) + " | mag_y_scaling:" + String(mag_y_scaling));
+    }
 }
 
 // function for reading both sensors. This is used in both the gyro and magnetometer offset calibrations so it is not inside the main RTOS task
@@ -217,29 +250,30 @@ float computeMagHeading(sensorPacket &sensor_packet)
     return heading;
 }
 
-// compute offset between gyro and magnetometer. The gyro starts at zero but the compass just uses whichever heading it starts at so this fixes that error
-void gyroOffset()
+// sets initial compass heading to 180 to match the gyro
+void zeroMagHeading()
 {
-    Serial.println("Computing gyro-mag alignment ...");
+    Serial.println("Computing initial compass heading ...");
 
     float mag_sum = 0.0;
     int samples = 0;
-
-    // compute average compass heading and use that as the gyro offset (because gyro starts at zero). Robot needs to be perfectly still for this to work correctly
+    sensorPacket sensor_packet;
     unsigned long start = millis();
-    while (millis() - start < 2000)
+
+    // comput average compass heading and use that to set the initial point of the magnetometer to 180
+    while(millis() - start < 2000)
     {
-        sensorPacket s = getSensorData();
-        mag_sum += computeMagHeading(s);
+        sensor_packet = getSensorData();
+        mag_sum += computeMagHeading(sensor_packet);
         samples++;
-        delay(5);
+        delay(1);
     }
 
-    float avg_mag = mag_sum / samples;
-    gyro_mag_offset = wrapAngle(avg_mag);
+    float avg_mag_heading = mag_sum / samples;
+    mag_heading_offset = avg_mag_heading - 180;
 
     Serial.println("    finished");
-    Serial.println("    gyro_mag_offset: " + String(gyro_mag_offset));
+    Serial.println("    mag_heading_offset: " + String(mag_heading_offset));
 }
 
 // simple wrapper for the getSensorData() method. This task occurs at 1 kHz which is about the limit of the I2C communication between the MCU and sensor
@@ -290,7 +324,7 @@ void updateAHRS(void *param)
 
         float mag_heading = computeMagHeading(sensor_packet);
         
-        float filtered_heading;
+        float filtered_heading = ahrs_packet.filtered_heading;
 
         // Ignore magnetometer heading when solenoid is on and only use gyro heading
         if (!solenoid_state)
@@ -308,15 +342,15 @@ void updateAHRS(void *param)
         ahrs_packet_new.gyro_heading = corrected_gyro_heading;
         ahrs_packet_new.gyro_rate = gyro_rate;
         ahrs_packet_new.mag_heading = mag_heading;
-        ahrs_packet_new.timestamp = pdTICKS_TO_MS(xTaskGetTickCount());
-        ahrs_packet_new.heading_state = ahrs_packet.heading_state;
+        ahrs_packet_new.timestamp = pdTICKS_TO_MS(xTaskGetTickCount()); 
+        // heading_state is not modified here, only steerRobot() should write to this variable
 
         xQueueOverwrite(ahrs_queue, &ahrs_packet_new);
         xTaskDelayUntil(&last_wake, period); //  again, xTaskDelayUntil() is used here instead of vTaskDelay() to ensure a consistent task frequency
     }
 }
 
-// task to handle limit switch clicks. Runs at 10 Hz to prevent CPU hogging but can be set to run faster if high click rates are needed
+// task to handle limit switch clicks. Runs at 50 Hz to prevent CPU hogging but can be set to run faster if high click rates are needed
 void handleSwitch(void *param)
 {
     static long last_time = 0;
@@ -346,23 +380,23 @@ void handleSwitch(void *param)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
 // task to control the servo: PID computation and turning at desired # of clicks
 void steerRobot(void *param)
 {
-    static float initial_heading = 0.0;
+    static float initial_heading = 180.0;
     static float trench_heading = 90.0;
-    static float final_heading = 0.0;
+    static float final_heading = 180.0;
 
     while(1)
     {
         AHRSPacket ahrs_packet;
         xQueuePeek(ahrs_queue, &ahrs_packet, portMAX_DELAY);
 
-        pid_input = ahrs_packet.gyro_heading; // filtered_heading;
+        pid_input = ahrs_packet.filtered_heading;
 
         // target heading update sequence
         if (ahrs_packet.heading_state == 0) { target_heading = initial_heading; }
@@ -377,9 +411,8 @@ void steerRobot(void *param)
         else if (ahrs_packet.heading_state == 1) // initial turning state -> trench heading state
         {
             float angle_error = deltaTheta(target_heading, pid_input);
-            if (abs(angle_error) < 15.0) { ahrs_packet.heading_state = 2; }
+            if (abs(angle_error) < 5.0) { ahrs_packet.heading_state = 2; }
 
-            target_heading = trench_heading; // PID setpoint is now the trench heading
             clicks_on_straight = 0; // don't increment this variable while turning
         }
 
@@ -388,9 +421,8 @@ void steerRobot(void *param)
         else if (ahrs_packet.heading_state == 3) // final turning state --> final heading state
         {
             float angle_error = deltaTheta(target_heading, pid_input);
-            if (abs(angle_error) < 15.0) { ahrs_packet.heading_state = 4; }
+            if (abs(angle_error) < 5.0) { ahrs_packet.heading_state = 4; }
 
-            target_heading = final_heading; // PID setpoint is now final heading
             clicks_on_straight = 0; // don't increment this variable while turning
         }
 
@@ -416,8 +448,8 @@ void fireSolenoid(void *param)
     {        
         xQueuePeek(ahrs_queue, &ahrs_packet, 0);
 
-        if (ahrs_packet.heading_state == 5) { actuation = false;} // stop actuating piston after robot has reached final waypoint
-        if (millis() <= 72000) { actuation = false; } // stop actuating piston after 72 seconds (57 seconds after the 15-second calibration)
+        // if (ahrs_packet.heading_state == 5) { actuation = false;} // stop actuating piston after robot has reached final waypoint
+        // if (millis() >= 72000) { actuation = false; } // stop actuating piston after 72 seconds (57 seconds after the 15-second calibration)
 
         if (actuation) { digitalWrite(SOLENOID_PIN, solenoid_state); } // fire solenoid only if conditions are met
 
@@ -447,9 +479,11 @@ void serialOutput(void *param)
         Serial.print(",filtered_heading:" + String(ahrs_packet.filtered_heading));
         Serial.print(",heading_state:" + String(ahrs_packet.heading_state));
         Serial.print(",clicks:" + String(clicks));
+        Serial.print(",clicks_on_straight:" + String(clicks_on_straight));
         Serial.print(",target_heading:" + String(target_heading));
         Serial.print(",servo_correction:" + String(pid_output));
         Serial.print(",solenoid_state:" + String(solenoid_state));
+        Serial.print(",actuation:" + String(int(actuation)));
         Serial.println();
 
         // vTaskDelay() is easier to implement but doesn't execute at exactly the frequency desired. For example next task run might occur in 105 ms
@@ -464,15 +498,17 @@ void setup()
     delay(2000); // can replace with while(!Serial)
     Wire.begin();
 
-    pinMode(LED_PIN, OUTPUT);
+    EEPROM.begin(32); // only 16 bytes are needed for storing values so 32 bytes gives a good margin
+
+    pinMode(BUZZER_PIN, OUTPUT);
     pinMode(SOLENOID_PIN, OUTPUT);
     pinMode(LIMIT_SWITCH_PIN, INPUT_PULLUP);
-    digitalWrite(LED_PIN, HIGH); // initally turn LED on to verify controller has booted
+    digitalWrite(BUZZER_PIN, LOW); // initially turn buzzer off
 
-    attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, CHANGE); // every time the status of this GPIO pin changes the interrupt will trigger (high -> low or low -> high)
+    attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, RISING); // every time the status of this GPIO pin changes the interrupt will trigger (high -> low or low -> high)
 
     steering_servo.attach(SERVO_PIN);
-    steering_correction.SetOutputLimits(-45.0, 45.0);
+    steering_correction.SetOutputLimits(-40.0, 40.0); // adjust limits to tune how tightly the robot turns
     steering_correction.SetMode(AUTOMATIC);
 
     // sensor calibration block start
@@ -486,7 +522,7 @@ void setup()
     calibrateLSM6();
     delayCalibration();
 
-    gyroOffset();
+    zeroMagHeading();
     delayCalibration();
     // sensor calibration block stop
 
@@ -494,22 +530,23 @@ void setup()
     sensor_queue = xQueueCreate(1, sizeof(sensorPacket));
     ahrs_queue = xQueueCreate(1, sizeof(AHRSPacket));
 
-    // initial queue seeding with zeroed data so tasks don't break on the first run
+    // ahrs queue seeding 
     AHRSPacket initial_ahrs;
     initial_ahrs.timestamp = xTaskGetTickCount();
-    initial_ahrs.gyro_heading = gyro_mag_offset;
+    initial_ahrs.gyro_heading = gyro_heading_offset;
     xQueueOverwrite(ahrs_queue, &initial_ahrs);
 
+    // sensor queue seeding
     sensorPacket initial_sensor;
     initial_sensor.timestamp = xTaskGetTickCount();
     xQueueOverwrite(sensor_queue, &initial_sensor);
 
     // task creation. Parameters: task, name, stack size [bytes], parameters (usually NULL), priority (highest priority -> greatest #), task pointer (also usually NULL);
     xTaskCreate(readSensorsRTOS, "SENSE", 4096, NULL, 6, NULL);
-    xTaskCreate(updateAHRS, "STATE", 4096, NULL, 5, NULL);
-    xTaskCreate(steerRobot, "SERVO", 4096, NULL, 4, NULL);
-    xTaskCreate(fireSolenoid, "FIRE", 4096, NULL, 3, NULL);
-    xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 2, NULL);
+    xTaskCreate(updateAHRS, "AHRS", 4096, NULL, 5, NULL);
+    xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 4, NULL);
+    xTaskCreate(steerRobot, "SERVO", 4096, NULL, 3, NULL);
+    xTaskCreate(fireSolenoid, "FIRE", 4096, NULL, 2, NULL);
     xTaskCreate(serialOutput, "DATA", 4096, NULL, 1, NULL);
 }
 
