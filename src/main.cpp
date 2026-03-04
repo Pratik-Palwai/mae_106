@@ -47,7 +47,8 @@ const int SERVO_PIN = D0;
 // solenoid variables. adjust open_time and close_time (milliseconds) to maximise distance travelled
 const int SOLENOID_PIN = D7;
 const int OPEN_TIME = 250, CLOSE_TIME = 750;
-volatile bool solenoid_state = false, actuation = true;
+volatile bool solenoid_state = false;
+volatile bool actuation = false; // toggle to turn off solenoid either after 60 sec or when the final waypoint is reached
 
 // pid variables. see steerRobot() task to change turn behavior between left/right (+/- 90.0 deg)
 double pid_input = 0.0, target_heading = 0.0, pid_output = 0.0;
@@ -396,7 +397,7 @@ void steerRobot(void *param)
         AHRSPacket ahrs_packet;
         xQueuePeek(ahrs_queue, &ahrs_packet, portMAX_DELAY);
 
-        pid_input = ahrs_packet.filtered_heading;
+        pid_input = ahrs_packet.gyro_heading;
 
         // target heading update sequence
         if (ahrs_packet.heading_state == 0) { target_heading = initial_heading; }
