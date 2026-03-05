@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <Wire.h>
@@ -20,11 +21,11 @@ float gyro_heading_offset = 0.0;
 
 // magnetometer (compass) variables. again the adafruit library offers more customization but reading the sensor requires more code
 LIS3MDL magnetometer;
-const long MAGNETOMETER_CALIBRATION_TIME = 20000;
+const long MAGNETOMETER_CALIBRATION_TIME = 5000;
 float mag_x_offset = 0, mag_y_offset = 0;
 float mag_x_scaling = 1.0, mag_y_scaling = 1.0;
 float mag_heading_offset = 0.0; // for setting the initial compass heading to 180 before each run
-const bool CALIBRATE_MAG = false; // true:calibrate magnetometer and store to EEPROM, false:use saved EEPROM values
+const bool CALIBRATE_MAG = true; // true:calibrate magnetometer and store to EEPROM, false:use saved EEPROM values
 
 // RTOS queues. these are better for getting real-time data vs volatiles but it are a little more complicated to read/write from
 QueueHandle_t sensor_queue;
@@ -34,8 +35,8 @@ QueueHandle_t ahrs_queue;
 const int BUZZER_PIN = D1;
 
 // limit switch variables. On my robot the switch actuates once per revolution, and ten clicks is where the robot should start turning
-const int LIMIT_SWITCH_PIN = D10, DEBOUNCE_TIME = 15;
-const int VERIFICATION_CLICKS = 95; // 50 clicks is roughly 10 feet
+const int LIMIT_SWITCH_PIN = D10, DEBOUNCE_TIME = 5;
+const int VERIFICATION_CLICKS = 50; // 50 clicks is roughly 10 feet
 volatile int clicks = 0; // variable is volatile because several tasks read/write to it
 bool trigger = false; // "latch" variable for software debouncing
 
@@ -378,7 +379,7 @@ void steerRobot(void *param)
         AHRSPacket ahrs_packet;
         xQueuePeek(ahrs_queue, &ahrs_packet, portMAX_DELAY);
         
-        pid_input = ahrs_packet.gyro_heading;
+        pid_input = ahrs_packet.filtered_heading;
 
         // PID computation and conversion to servo angles
         steering_correction.Compute();
@@ -400,7 +401,7 @@ void fireSolenoid(void *param)
     {        
         xQueuePeek(ahrs_queue, &ahrs_packet, 0);
 
-        if(clicks >= VERIFICATION_CLICKS) { actuation = false; }
+        if(clicks >= VERIFICATION_CLICKS) { actuation = false; } // stop firing piston after 10 feet
 
         if (actuation) { digitalWrite(SOLENOID_PIN, solenoid_state); } // fire solenoid only if conditions are met
 
@@ -467,9 +468,9 @@ void setup()
     initalizeLIS3MDL();
     delayCalibration();
 
-    calibrateLSM6();
-    delayCalibration();
     calibrateLIS3MDL();
+    delayCalibration();
+    calibrateLSM6();
     delayCalibration();
 
     computeGyroOffset();
