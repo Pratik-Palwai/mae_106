@@ -1,3 +1,6 @@
+#ifndef ACTUATION_HPP
+#define ACTUATION_HPP
+
 #include <Arduino.h>
 #include <PID_v1.h>
 #include <Servo.h>
@@ -48,3 +51,5 @@ void firePiston(void *param) {
         solenoid_state = !solenoid_state;
     }
 }
+
+#endif

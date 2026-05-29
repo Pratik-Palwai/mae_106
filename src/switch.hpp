@@ -1,3 +1,6 @@
+#ifndef SWITCH_HPP
+#define SWITCH_HPP
+
 #include <Arduino.h>
 
 #include "robot_vars.hpp"
@@ -27,3 +30,5 @@ void handleSwitch(void *param) {
         vTaskDelay(pdMS_TO_TICKS(20)); // executes at 50 Hz
     }
 }
+
+#endif

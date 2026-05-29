@@ -1,3 +1,6 @@
+#ifndef SENSORS_HPP
+#define SENSORS_HPP
+
 #include <Arduino.h>
 #include <MadgwickAHRS.h>
 
@@ -38,3 +41,5 @@ void updateAHRS(void *param) {
         xTaskDelayUntil(&last_wake, period);
     }
 }
+
+#endif
