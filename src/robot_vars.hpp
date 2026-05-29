@@ -13,7 +13,12 @@ struct AHRSPacket {
     float yaw = 0.0;
 };
 
+const int CLICKS_BEFORE_TURN = 20;
+const int CLICKS_AFTER_TURN = 20;
+
 int clicks = 0;
+int clicks_on_straight = 0;
+
 int heading_state = 0;
 
 AHRSPacket ahrs_packet_main;

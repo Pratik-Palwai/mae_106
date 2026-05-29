@@ -5,11 +5,7 @@
 const int LIMIT_SWITCH_PIN = D10;
 const int DEBOUNCE_TIME = 15; // [ms]
 
-const int CLICKS_BEFORE_TURN = 20;
-const int CLICKS_AFTER_TURN = 20;
-
 static long last_time = 0;
-int clicks_on_straight = 0;
 
 bool trigger = false;
 

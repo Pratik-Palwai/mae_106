@@ -53,8 +53,8 @@ public:
         sensor.read();
 
         sensor_packet.gyro_x = (sensor.g.x * GYRO_SCALING) - rate_bias_x;
-        sensor_packet.gyro_x = (sensor.g.y * GYRO_SCALING) - rate_bias_y;
-        sensor_packet.gyro_x = (sensor.g.z * GYRO_SCALING) - rate_bias_z;
+        sensor_packet.gyro_y = (sensor.g.y * GYRO_SCALING) - rate_bias_y;
+        sensor_packet.gyro_z = (sensor.g.z * GYRO_SCALING) - rate_bias_z;
 
         sensor_packet.accel_x = sensor.a.x;
         sensor_packet.accel_y = sensor.a.y;
