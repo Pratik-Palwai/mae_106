@@ -1,0 +1,39 @@
+#include <Arduino.h>
+#include <MadgwickAHRS.h>
+
+#include "sensors.hpp"
+#include "actuation.hpp"
+#include "imu.hpp"
+#include "magnetometer.hpp"
+#include "robot_vars.hpp"
+#include "switch.hpp"
+
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+
+    Wire.begin();
+    EEPROM.begin(32);
+
+    imu_main.initialize();
+    compass_main.initialize();
+
+    imu_main.calibrate();
+    compass_main.calibrate();
+
+    pinMode(SOLENOID_PIN, OUTPUT);
+    pinMode(LIMIT_SWITCH_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(LIMIT_SWITCH_PIN), limitSwitchISR, RISING);
+
+    steering_servo.attach(SERVO_PIN);
+    steering_correction.SetOutputLimits(-40, 40);
+    steering_correction.SetMode(AUTOMATIC);
+
+    xTaskCreate(readAllSensors, "SENSE", 4096, NULL, 6, NULL);
+    xTaskCreate(updateAHRS, "AHRS", 4096, NULL, 5, NULL);
+    xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 4, NULL);
+    xTaskCreate(steerRobot, "STEER", 4096, NULL, 3, NULL);
+    xTaskCreate(firePiston, "FIRE", 4096, NULL, 2, NULL);
+}
+
+void loop() { } // nothing needs to be in loop() because FreeRTOS handles all
