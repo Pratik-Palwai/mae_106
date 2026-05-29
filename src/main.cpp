@@ -12,8 +12,8 @@ void setup() {
     Serial.begin(115200);
     delay(2000);
 
-    Wire.begin();
-    EEPROM.begin(32);
+    Wire.begin(); // default I2C pins on ESP32C3: SDA GPIO8 and SCL GPIO9
+    EEPROM.begin(32); // save some space to store magnetometer calibration values if needed
 
     imu_main.initialize();
     compass_main.initialize();

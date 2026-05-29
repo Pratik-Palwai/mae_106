@@ -35,7 +35,7 @@ void steerRobot(void *param) {
         steering_correction.Compute();
         steering_servo.write(90.0 + pid_output);
 
-        vTaskDelay(pdMS_TO_TICKS(50)); // 
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
