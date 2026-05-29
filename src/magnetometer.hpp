@@ -5,9 +5,9 @@
 #include <EEPROM.h>
 #include <LIS3MDL.h>
 
-#include "robot_vars.hpp"
+#include "packets_vars_functions.hpp"
 
-#define EEPROM_MAG_X_OFFSET_ADDRESS 0
+#define EEPROM_MAG_X_OFFSET_ADDRESS 0 // a float uses 4 bytes of memory so the addresses are spaced 4 bytes apart
 #define EEPROM_MAG_X_SCALING_ADDRESS 4
 #define EEPROM_MAG_Y_OFFSET_ADDRESS 8
 #define EEPROM_MAG_Y_SCALING_ADDRESS 12
@@ -17,16 +17,16 @@
 const int MAG_CAL_SAMPLES = 3000;
 
 class Magnetometer106 {
-    LIS3MDL sensor;
+    LIS3MDL sensor; // core sensor, the STM LIS3MDL
 
-    float x_offset = 0.0, x_scaling = 1.0;
-    float y_offset = 0.0, y_scaling = 1.0;
+    float x_offset = 0.0, x_scaling = 1.0; // offsets are for hard-iron calibration
+    float y_offset = 0.0, y_scaling = 1.0; // scaling factors are for soft-iron calibration
     float z_offset = 0.0, z_scaling = 1.0;
 
-    bool manual_calibration = false;
+    bool manual_calibration = false; // decide whether to perform a manual calibration or pull previous values from EEPROM
 
     void calibrateToEEPROM() {
-        float x_min = 2147483646, x_max = -2147483646;
+        float x_min = 2147483646, x_max = -2147483646; // 32-bit integer limits
         float y_min = 2147483646, y_max = - 2147483646;
         float z_min = 2147483646, z_max = - 2147483646;
 
@@ -47,6 +47,7 @@ class Magnetometer106 {
             delay(1);
         }
 
+        // xyz offsets move the calibration sphere center to the origin
         x_offset = (x_max + x_min) / 2.0;
         y_offset = (y_max + y_min) / 2.0;
         z_offset = (z_max + z_min) / 2.0;
@@ -56,6 +57,7 @@ class Magnetometer106 {
         float radius_z = (z_max - z_min) / 2.0;
         float radius_avg = (radius_x + radius_y + radius_z) / 3.0;
 
+        // if the magnetic field is distorted the scaling factors shape the ellipse into a sphere
         x_scaling = radius_avg / radius_x;
         y_scaling = radius_avg / radius_y;
         z_scaling = radius_avg / radius_z;
@@ -96,7 +98,7 @@ class Magnetometer106 {
 
 public:
     void initialize() {
-        if (!sensor.init()) {
+        if (!sensor.init()) { // initializes the I2C communcation between the ESP32 and the sensor
             Serial.println("Failed to detect/initialize LIS3MDL");
             while(1);
         }
@@ -110,7 +112,8 @@ public:
         else { calibrateFromEEPROM(); }
     }
 
-    void read(SensorPacket& sensor_packet) {
+    // read the sensor values and place them into the given sensor packet
+    void read(SensorPacket& sensor_packet) { // because sensor_packet is passed by reference(&) it avoids having to make excessive copies
         sensor.read();
 
         sensor_packet.mag_x = (sensor.m.x - x_offset) * x_scaling;

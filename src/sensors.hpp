@@ -6,7 +6,7 @@
 
 #include "imu.hpp"
 #include "magnetometer.hpp"
-#include "robot_vars.hpp"
+#include "packets_vars_functions.hpp"
 
 Madgwick filter_main; // creates an instance of the Madgwick filter, which is a common sensor fusion algorithm for microcontrollers
                       // it uses the accelerometer, gyroscope, and magnetometer to create a full 3-axis AHRS, and for 106 we only need to use the yaw

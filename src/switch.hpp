@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-#include "robot_vars.hpp"
+#include "packets_vars_functions.hpp"
 
 const int LIMIT_SWITCH_PIN = D10;
 const int DEBOUNCE_TIME = 15; // [ms]

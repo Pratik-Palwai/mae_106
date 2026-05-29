@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <LSM6.h>
 
-#include "robot_vars.hpp"
+#include "packets_vars_functions.hpp"
 
 const int GYRO_CAL_SAMPLES = 3000; // number of samples to be averaged out, more samples increases accuracy but takes longer
 const float GYRO_SCALING = 0.00891089108; // convert betweeen whatever units the gyro is in to degrees per second

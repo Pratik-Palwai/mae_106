@@ -5,7 +5,7 @@
 #include "actuation.hpp"
 #include "imu.hpp"
 #include "magnetometer.hpp"
-#include "robot_vars.hpp"
+#include "packets_vars_functions.hpp"
 #include "switch.hpp"
 
 void setup() {

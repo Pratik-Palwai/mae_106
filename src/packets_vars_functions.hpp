@@ -24,4 +24,13 @@ int heading_state = 0; // 0:initial heading, 1:initial turning, 2:final heading,
 AHRSPacket ahrs_packet_main; // because we are passing packets by reference we only ever need one instance of the packet
 SensorPacket sensor_packet_main; // instead of creating copies the functions just modify the packets where they are
 
+// returns difference between angles, accounting for angle wrapping
+float angleDiff(float a, float b) {
+    float c = a - b;
+    while (c > 180.0) { c += 360.0; }
+    while (c < 180.0) { c -= 360.0; }
+
+    return c;
+}
+
 #endif
