@@ -13,7 +13,7 @@ void setup() {
     delay(2000);
 
     Wire.begin(); // default I2C pins on ESP32C3: SDA GPIO8 and SCL GPIO9
-    EEPROM.begin(32); // save some space to store magnetometer calibration values if needed
+    EEPROM.begin(32); // save some space to store magnetometer calibration values
 
     imu_main.initialize();
     compass_main.initialize();
@@ -34,6 +34,7 @@ void setup() {
     xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 4, NULL);
     xTaskCreate(steerRobot, "STEER", 4096, NULL, 3, NULL);
     xTaskCreate(firePiston, "FIRE", 4096, NULL, 2, NULL);
+    xTaskCreate(serialOutput, "SERIAL", 4096, NULL, 1, NULL);
 }
 
 void loop() { } // nothing needs to be in loop() because FreeRTOS handles all

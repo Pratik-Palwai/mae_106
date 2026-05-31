@@ -29,7 +29,6 @@ void steerRobot(void *param) {
 
         if (heading_state == 0) { target_heading = initial_heading; }
         else { target_heading = final_heading; }
-        
         if ((heading_state == 0) && (clicks_on_straight > CLICKS_BEFORE_TURN)) { heading_state = 1; }
         else if (heading_state == 1) {
             float angle_error = angleDiff(pid_input, target_heading);

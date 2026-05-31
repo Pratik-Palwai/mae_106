@@ -1,13 +1,17 @@
 #ifndef ROBOT_VARS_HPP
 #define ROBOT_VARS_HPP
 
+#include <Arduino.h>
+
 struct SensorPacket { // includes the 9 measurements needed by the Madgwick filter
+    double timestamp = 0;
     float accel_x = 0.0, accel_y = 0.0, accel_z = 0.0;
     float gyro_x = 0.0, gyro_y = 0.0, gyro_z = 0.0;
     float mag_x = 0.0, mag_y = 0.0, mag_z = 0.0;
 };
 
 struct AHRSPacket { // again, we only need yaw but is nice and not too expensive to look at all the values
+    double timestamp = 0;
     float roll = 0.0;
     float pitch = 0.0;
     float yaw = 0.0;
@@ -31,6 +35,21 @@ float angleDiff(float a, float b) {
     while (c < 180.0) { c -= 360.0; }
 
     return c;
+}
+
+void serialOutput(void *param)
+{    while(1)
+    {
+        Serial.print(">timestamp:" + String(ahrs_packet_main.timestamp));
+        Serial.print(",roll:" + String(ahrs_packet_main.roll));
+        Serial.print(",pitch:" + String(ahrs_packet_main.pitch));
+        Serial.print("yaw:" + String(ahrs_packet_main.yaw));
+        Serial.print("clicks:" + String(clicks));
+        Serial.print("heading_state:" + String(heading_state));
+        Serial.print('\n');
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
 
 #endif
