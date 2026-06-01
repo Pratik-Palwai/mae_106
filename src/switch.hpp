@@ -10,7 +10,7 @@ const int DEBOUNCE_TIME = 15; // [ms]
 
 static long last_time = 0;
 
-bool trigger = false;
+bool trigger = false; // latch variable for software debouncing
 
 void IRAM_ATTR limitSwitchISR() { trigger = true; }
 

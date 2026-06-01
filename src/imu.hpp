@@ -23,7 +23,7 @@ public:
             while(1);
         }
 
-        else { Serial.println("Successfully initialized and detected LSM6"); }
+        else { Serial.println("Successfully detected and initialized LSM6"); }
         sensor.enableDefault();
     }
 

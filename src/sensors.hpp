@@ -16,13 +16,14 @@ Magnetometer106 compass_main; // creates an instance of the compass, defined in 
 
 // rtos task to read the sensors, executed at 1kHz which is the fastest FreeRTOS allows
 void readAllSensors(void *param) {
-    TickType_t last_wake = xTaskGetTickCount(); // FreeRTOS ticks are how everything is timed, on the ESP32C3 the tick rate is 1000 ticks/sec so 1 ms per tick
-    const TickType_t period = pdMS_TO_TICKS(1); // the period is 1 ms, or 1000 times a second
+    TickType_t last_wake = xTaskGetTickCount(); // FreeRTOS ticks are how everything is timed, on the ESP32C3 the tick rate is 1000 ticks/sec
+    const TickType_t period = pdMS_TO_TICKS(1); // the period is 1 ms (1 tick)
 
     while (1) {
         imu_main.read(sensor_packet_main); // sensor_packet_main is passed by reference (indicated by the & in imu.hpp), meaning the function can modify the passed parameter in place
         compass_main.read(sensor_packet_main); // this avoids having to make excessive copies of each sensor packet
 
+        sensor_packet_main.timestamp = static_cast<long>(millis());
         xTaskDelayUntil(&last_wake, period); // xTaskDelayUntil() is used instead of vTaskDelay() for a fixed task frequency
     }
 }
@@ -42,10 +43,11 @@ void updateAHRS(void *param) {
         
         // get AHRS variables (roll, pitch, and yaw) and push them to ahrs_packet_main
         // for 106 we only really need yaw because the robot is flat, but it is nice and not much work to get all three axes
-        ahrs_packet_main.roll = filter_main.getRoll();
-        ahrs_packet_main.pitch = filter_main.getPitch();
-        ahrs_packet_main.yaw = filter_main.getYaw();
+        ahrs_packet_main.roll = filter_main.getPitch() - roll_trim;
+        ahrs_packet_main.pitch = filter_main.getRoll() - pitch_trim;
+        ahrs_packet_main.yaw = filter_main.getYaw() - yaw_trim;
 
+        ahrs_packet_main.timestamp = static_cast<long>(millis());
         xTaskDelayUntil(&last_wake, period); // again, xTaskDelayUntil() gives better accuracy than a simple vTaskDelay()
     }
 }

@@ -51,7 +51,7 @@ void steerRobot(void *param) {
 void firePiston(void *param) {
     while (1) {
         if (millis() >= 72000) { actuation_allowed = false; } // after 75 sec (60 sec competition + 15 sec setup) the piston will shut off
-        if (heading_state = 3) { actuation_allowed = false; } // if the robot has gone down the corridor the piston will shut off
+        if (heading_state == 3) { actuation_allowed = false; } // if the robot has gone down the corridor the piston will shut off
 
         if (actuation_allowed) {
             digitalWrite(SOLENOID_PIN, solenoid_state);
@@ -62,7 +62,10 @@ void firePiston(void *param) {
             solenoid_state = !solenoid_state;
         }
 
-        else { digitalWrite(SOLENOID_PIN, LOW); } // turn the solenoid off if the pin is left HIGH from the actuation_allowed cuttof
+        else {
+            digitalWrite(SOLENOID_PIN, LOW); // turn the solenoid off if the pin is left HIGH from the actuation_allowed cutoff
+            vTaskDelay(50);
+        }
     }
 }
 

@@ -13,13 +13,15 @@ void setup() {
     delay(2000);
 
     Wire.begin(); // default I2C pins on ESP32C3: SDA GPIO8 and SCL GPIO9
-    EEPROM.begin(32); // save some space to store magnetometer calibration values
+    EEPROM.begin(24); // save 24 bytes: 3 axes * 2 values (scaling + offset) * 4 bytes per float
 
     imu_main.initialize();
     compass_main.initialize();
 
     imu_main.calibrate();
     compass_main.calibrate();
+
+    filter_main.begin(500); // must match updateAHRS frequency defined in sensors.hpp
 
     pinMode(SOLENOID_PIN, OUTPUT);
     pinMode(LIMIT_SWITCH_PIN, INPUT);

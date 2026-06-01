@@ -14,7 +14,7 @@
 #define EEPROM_MAG_Z_OFFSET_ADDRESS 16
 #define EEPROM_MAG_Z_SCALING_ADDRESS 20
 
-const int MAG_CAL_SAMPLES = 3000;
+const int MAG_CAL_SAMPLES = 15000;
 
 class Magnetometer106 {
     LIS3MDL sensor; // core sensor, the STM LIS3MDL
@@ -41,7 +41,7 @@ class Magnetometer106 {
             if (sensor.m.x > x_max) { x_max = sensor.m.x; }
             if (sensor.m.y < y_min) { y_min = sensor.m.y; }
             if (sensor.m.y > y_max) { y_max = sensor.m.y; }
-            if (sensor.m.z > z_min) { z_min = sensor.m.z; }
+            if (sensor.m.z < z_min) { z_min = sensor.m.z; }
             if (sensor.m.z > z_max) { z_max = sensor.m.z; }
 
             delay(1);
