@@ -16,7 +16,6 @@ volatile bool actuation_allowed = true;
 Servo steering_servo;
 const int SERVO_PIN = D9;
 
-double pid_input = 0.0, target_heading = 0.0, pid_output = 0.0;
 const float K_P = 0.50, K_I = 0.0, K_D = 0.0;
 PID steering_correction(&pid_input, &pid_output, &target_heading, K_P, K_I, K_D, REVERSE);  // pid mode can be DIRECT or REVERSE depending on how the servo and magnetometer are mounted
 

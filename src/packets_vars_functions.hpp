@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 struct SensorPacket { // includes the 9 measurements needed by the Madgwick filter
-    long timestamp = 0;
+    long timestamp = 0; // microseconds since clock start
     float accel_x = 0.0, accel_y = 0.0, accel_z = 0.0;
     float gyro_x = 0.0, gyro_y = 0.0, gyro_z = 0.0;
     float mag_x = 0.0, mag_y = 0.0, mag_z = 0.0;
@@ -12,7 +12,7 @@ struct SensorPacket { // includes the 9 measurements needed by the Madgwick filt
 
 struct AHRSPacket { // again, we only need yaw but is nice and not too expensive to look at all the values
     long timestamp = 0;
-    float roll = 0.0;
+    float roll = 0.0; // [deg]
     float pitch = 0.0;
     float yaw = 0.0;
 };
@@ -29,6 +29,8 @@ int clicks_on_straight = 0; // for knowing when to stop at the end of the trench
 
 int heading_state = 0; // 0:initial heading, 1:initial turning, 2:final heading, 3: stop
 
+double pid_input = 0.0, target_heading = 0.0, pid_output = 0.0; // pid input and output variables, used in actuation.hpp
+
 AHRSPacket ahrs_packet_main; // because we are passing packets by reference we only ever need one instance of the packet
 SensorPacket sensor_packet_main; // instead of creating copies the functions just modify the packets where they are
 
@@ -41,8 +43,8 @@ float angleDiff(float a, float b) {
     return c;
 }
 
-void serialOutput(void *param)
-{    while(1)
+void serialOutput(void *param) {
+    while(1)
     {
         Serial.print(">timestamp:" + String(ahrs_packet_main.timestamp));
         Serial.print(",roll:" + String(ahrs_packet_main.roll));

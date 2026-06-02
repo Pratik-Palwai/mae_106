@@ -23,7 +23,7 @@ void readAllSensors(void *param) {
         imu_main.read(sensor_packet_main); // sensor_packet_main is passed by reference (indicated by the & in imu.hpp), meaning the function can modify the passed parameter in place
         compass_main.read(sensor_packet_main); // this avoids having to make excessive copies of each sensor packet
 
-        sensor_packet_main.timestamp = static_cast<long>(millis());
+        sensor_packet_main.timestamp = static_cast<long>(micros());
         xTaskDelayUntil(&last_wake, period); // xTaskDelayUntil() is used instead of vTaskDelay() for a fixed task frequency
     }
 }
@@ -47,7 +47,7 @@ void updateAHRS(void *param) {
         ahrs_packet_main.pitch = filter_main.getRoll() - pitch_trim;
         ahrs_packet_main.yaw = filter_main.getYaw() - yaw_trim;
 
-        ahrs_packet_main.timestamp = static_cast<long>(millis());
+        ahrs_packet_main.timestamp = static_cast<long>(micros());
         xTaskDelayUntil(&last_wake, period); // again, xTaskDelayUntil() gives better accuracy than a simple vTaskDelay()
     }
 }
