@@ -10,7 +10,7 @@
 class TelemetryServer106 {
     WebServer server;
     const char* SSID = "pratik_envy";
-    const char* PASSWORD = "...";
+    const char* PASSWORD = "pratik_hotspot";
 
     String html =
     "<!DOCTYPE html>"
@@ -33,7 +33,7 @@ public:
 
         while (WiFi.status() != WL_CONNECTED) {
             delay(250); 
-            Serial.print(". ");
+            Serial.print('.');
         }
 
         Serial.println(" finished");

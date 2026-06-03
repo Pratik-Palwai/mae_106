@@ -14,7 +14,7 @@
 #define EEPROM_MAG_Z_OFFSET_ADDRESS 16
 #define EEPROM_MAG_Z_SCALING_ADDRESS 20
 
-const int MAG_CAL_SAMPLES = 15000;
+const int MAG_CAL_SAMPLES = 10000;
 
 class Magnetometer106 {
     LIS3MDL sensor; // core sensor, the STM LIS3MDL
@@ -31,8 +31,6 @@ class Magnetometer106 {
         float z_min = 2147483646, z_max = - 2147483646;
 
         Serial.print("Starting magnetometer calibration loop ... ");
-
-        unsigned long start_time = millis();
 
         for (int i = 0; i < MAG_CAL_SAMPLES; ++i) {
             sensor.read();

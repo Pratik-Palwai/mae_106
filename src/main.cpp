@@ -34,7 +34,6 @@ void setup() {
     steering_correction.SetOutputLimits(-40, 40);
     steering_correction.SetMode(AUTOMATIC);
 
-    xTaskCreate(readAllSensors, "SENSE", 4096, NULL, 7, NULL);
     xTaskCreate(updateAHRS, "AHRS", 4096, NULL, 6, NULL);
     xTaskCreate(handleSwitch, "SWITCH", 4096, NULL, 5, NULL);
     xTaskCreate(steerRobot, "STEER", 4096, NULL, 4, NULL);
