@@ -23,9 +23,12 @@ public:
             Serial.println("Failed to detect/initialize LSM6");
             while(1);
         }
-
         else { Serial.println("Successfully detected and initialized LSM6"); }
+        
         sensor.enableDefault();
+        sensor.writeReg(LSM6::CTRL1_XL, 0x90); // set accelerometer refresh rate to 1.66 kHz
+        sensor.writeReg(LSM6::CTRL2_G, 0x90); // set gyro refresh rate to 1.66 kHz
+        
     }
 
     // take samples from the gyro and average them out over a few seconds to calculate the rate bias offsets

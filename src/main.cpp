@@ -15,6 +15,7 @@ void setup() {
 
     Wire.begin(); // default I2C pins on ESP32C3: SDA GPIO8 and SCL GPIO9
     EEPROM.begin(24); // save 24 bytes: 3 axes * 2 values (scaling + offset) * 4 bytes per float
+    Wire.setClock(4e5); // set I2C to allow for a 0.5 kHz sensor polling rate
 
     telemetry_server_main.initialize();
 

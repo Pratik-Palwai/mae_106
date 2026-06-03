@@ -4,7 +4,6 @@
 #include <Arduino.h>
 
 struct SensorPacket { // includes the 9 measurements needed by the Madgwick filter
-    long timestamp = 0; // microseconds since clock start
     float accel_x = 0.0, accel_y = 0.0, accel_z = 0.0;
     float gyro_x = 0.0, gyro_y = 0.0, gyro_z = 0.0;
     float mag_x = 0.0, mag_y = 0.0, mag_z = 0.0;
@@ -47,12 +46,21 @@ void serialOutput(void *param) {
     while(1)
     {
         Serial.print(">timestamp:" + String(ahrs_packet_main.timestamp));
+        Serial.print(",accel_x:" + String(sensor_packet_main.accel_x));
+        Serial.print(",accel_y:" + String(sensor_packet_main.accel_y));
+        Serial.print(",accel_z:" + String(sensor_packet_main.accel_z));
+        Serial.print(",gyro_x:" + String(sensor_packet_main.gyro_x));
+        Serial.print(",gyro_y:" + String(sensor_packet_main.gyro_y));
+        Serial.print(",gyro_z:" + String(sensor_packet_main.gyro_z));
+        Serial.print(",mag_x:" + String(sensor_packet_main.mag_x));
+        Serial.print(",mag_y:" + String(sensor_packet_main.mag_y));
+        Serial.print(",mag_z:" + String(sensor_packet_main.mag_z));
         Serial.print(",roll:" + String(ahrs_packet_main.roll));
         Serial.print(",pitch:" + String(ahrs_packet_main.pitch));
         Serial.print(",yaw:" + String(ahrs_packet_main.yaw));
         Serial.print(",clicks:" + String(clicks));
         Serial.print(",heading_state:" + String(heading_state));
-        Serial.print('\n');
+        Serial.print("\r\n");
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
