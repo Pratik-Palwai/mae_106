@@ -16,10 +16,6 @@ struct AHRSPacket { // again, we only need yaw but is nice and not too expensive
     float yaw = 0.0;
 };
 
-float roll_trim = -2.35;
-float pitch_trim = -178.18;
-float yaw_trim = 256.80;
-
 const int CLICKS_BEFORE_TURN = 20; // tune this
 const int CLICKS_AFTER_TURN = 20; // tune this
 
@@ -36,8 +32,8 @@ SensorPacket sensor_packet_main; // instead of creating copies the functions jus
 // returns difference between angles, accounting for angle wrapping
 float angleDiff(float a, float b) {
     float c = a - b;
-    while (c > 180.0) { c += 360.0; }
-    while (c < -180.0) { c -= 360.0; }
+    while (c > 180.0) { c -= 360.0; }
+    while (c < -180.0) { c += 360.0; }
 
     return c;
 }

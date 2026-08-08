@@ -8,7 +8,7 @@
 #include "packets_vars_functions.hpp"
 
 const int GYRO_CAL_SAMPLES = 3000; // number of samples to be averaged out, more samples increases accuracy but takes longer
-const float GYRO_SCALING = 0.00875; // convert betweeen whatever units the gyro is in to degrees per second
+const float GYRO_SCALING = 0.00891089108; // convert betweeen whatever units the gyro is in to degrees per second
 
 // only one instance of this class ever needs to be created because there is only one IMU on the robot
 class InertialMeasurementUnit106 { // placing all the methods into a class makes it easier to split code between files
@@ -25,10 +25,7 @@ public:
         }
         else { Serial.println("Successfully detected and initialized LSM6"); }
         
-        sensor.enableDefault();
-        sensor.writeReg(LSM6::CTRL1_XL, 0x90); // set accelerometer refresh rate to 1.66 kHz
-        sensor.writeReg(LSM6::CTRL2_G, 0x90); // set gyro refresh rate to 1.66 kHz
-        
+        sensor.enableDefault();        
     }
 
     // take samples from the gyro and average them out over a few seconds to calculate the rate bias offsets
